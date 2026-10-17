@@ -6,6 +6,9 @@ import android.service.notification.NotificationListenerService;
 import android.service.notification.StatusBarNotification;
 import android.util.Log;
 
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -17,6 +20,23 @@ public class PaymentNotificationListenerService extends NotificationListenerServ
     private static final Pattern UTR_PATTERN = Pattern.compile("(?:UPI\\s*(?:ref|reference|txn|id)?|Ref(?:erence)?\\s*(?:no|number)?|UTR)\\s*[:#-]?\\s*([0-9]{12})", Pattern.CASE_INSENSITIVE);
     private static final Pattern VPA_PATTERN = Pattern.compile("([a-zA-Z0-9._-]+@[a-zA-Z0-9]+)");
 
+    // SECURITY: only notifications posted by these UPI / bank apps are treated as payments.
+    // Without this, a chat message ("Rs 499 credited, Ref 123456789012") sent to the merchant's
+    // phone through WhatsApp or SMS apps would be reported as a real payment.
+    private static final Set<String> ALLOWED_PACKAGES = new HashSet<>(Arrays.asList(
+        "com.phonepe.app",
+        "com.google.android.apps.nbu.paisa.user",
+        "net.one97.paytm",
+        "in.org.npci.upiapp",
+        "com.dreamplug.androidapp",
+        "com.snapwork.hdfc",
+        "com.csam.icici.bank.imobile",
+        "com.sbi.upi",
+        "com.sbi.lotusintouch",
+        "com.axis.mobile",
+        "com.msf.kbank.mobile"
+    ));
+
     @Override
     public void onCreate() {
         super.onCreate();
@@ -26,6 +46,7 @@ public class PaymentNotificationListenerService extends NotificationListenerServ
     @Override
     public void onNotificationPosted(StatusBarNotification sbn) {
         if (sbn == null || !apiClient.isPaired()) return;
+        if (!ALLOWED_PACKAGES.contains(sbn.getPackageName())) return;
 
         Notification notif = sbn.getNotification();
         if (notif == null) return;

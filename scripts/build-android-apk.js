@@ -1,151 +1,189 @@
+/**
+ * Builds the YOUPI SMS Gateway APK from source (apps/android-observer-app, Java sources).
+ *
+ * SECURITY: the repository no longer ships prebuilt APK or JAR binaries, because nobody can
+ * verify that a committed binary matches the source. Build it yourself with this script
+ * (or the "Android APK" GitHub Actions workflow) and install the result on your phone.
+ *
+ * Requirements:
+ *   - JDK 17 (JAVA_HOME set, or javac/keytool on PATH)
+ *   - Android SDK with build-tools 34.0.0 and platforms;android-34
+ *     (ANDROID_HOME or ANDROID_SDK_ROOT set)
+ *
+ * Optional environment:
+ *   ANDROID_BUILD_TOOLS_VERSION  default 34.0.0
+ *   ANDROID_PLATFORM             default android-34
+ *   ANDROID_KEYSTORE_PATH        keystore used to sign (default: data/android-release.keystore, created once)
+ *   ANDROID_KEYSTORE_PASSWORD    keystore + key password (default: random, saved next to the keystore)
+ *   ANDROID_KEY_ALIAS            default youpi_gateway
+ */
 import fs from 'node:fs';
 import path from 'node:path';
-import { execSync } from 'node:child_process';
+import crypto from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const REPO_ROOT = path.resolve(__dirname, '..');
+const isWindows = process.platform === 'win32';
 
-console.log('🚀 Starting certified Android APK compilation for YouPI SMS Gateway...');
+const ZXING_VERSION = '3.5.3';
+const ZXING_URL = `https://repo1.maven.org/maven2/com/google/zxing/core/${ZXING_VERSION}/core-${ZXING_VERSION}.jar`;
 
-// Resolve Toolchain Paths
-const JDK_DIR = 'C:\\Program Files\\Microsoft\\jdk-17.0.20.101-hotspot\\bin';
-const JAVAC = path.join(JDK_DIR, 'javac.exe');
-const KEYTOOL = path.join(JDK_DIR, 'keytool.exe');
+function fail(message) {
+  console.error(`\n❌ ${message}`);
+  process.exit(1);
+}
 
-const CLT_BUILD_TOOLS = 'C:\\Users\\gaura\\scoop\\apps\\android-clt\\current\\build-tools\\34.0.0';
-const AAPT = path.join(CLT_BUILD_TOOLS, 'aapt.exe');
-const D8 = path.join(CLT_BUILD_TOOLS, 'd8.bat');
-const ZIPALIGN = path.join(CLT_BUILD_TOOLS, 'zipalign.exe');
-const APKSIGNER = path.join(CLT_BUILD_TOOLS, 'apksigner.bat');
-const ANDROID_JAR = 'C:\\Users\\gaura\\scoop\\apps\\android-clt\\current\\platforms\\android-34\\android.jar';
+function resolveTool(dir, name, winExt) {
+  const candidate = path.join(dir, isWindows ? `${name}${winExt}` : name);
+  return fs.existsSync(candidate) ? candidate : null;
+}
 
-const APP_DIR = path.resolve(REPO_ROOT, 'apps/android-observer-app/app');
-const MANIFEST = path.resolve(APP_DIR, 'src/main/AndroidManifest.xml');
-const RES_DIR = path.resolve(APP_DIR, 'src/main/res');
-const JAVA_DIR = path.resolve(APP_DIR, 'src/main/java/com/youpi/observer');
+function javaTool(name) {
+  const javaHome = process.env.JAVA_HOME;
+  if (javaHome) {
+    const p = path.join(javaHome, 'bin', isWindows ? `${name}.exe` : name);
+    if (fs.existsSync(p)) return p;
+  }
+  return name; // fall back to PATH
+}
 
-const WORK_DIR = path.resolve(REPO_ROOT, '.tmp_apk_build');
-if (fs.existsSync(WORK_DIR)) {
+// Runs a tool without a shell. Windows .bat wrappers need cmd.exe, invoked with an argument list.
+function run(tool, args, options = {}) {
+  if (isWindows && /\.bat$/i.test(tool)) {
+    return execFileSync(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', tool, ...args], { stdio: 'inherit', ...options });
+  }
+  return execFileSync(tool, args, { stdio: 'inherit', ...options });
+}
+
+async function download(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Download failed (${res.status}): ${url}`);
+  return Buffer.from(await res.arrayBuffer());
+}
+
+async function ensureZxingJar(libsDir) {
+  const jarPath = path.join(libsDir, `core-${ZXING_VERSION}.jar`);
+  // Always verify against the checksum Maven Central publishes for this artifact.
+  const expectedSha1 = (await download(`${ZXING_URL}.sha1`)).toString('utf8').trim().split(/\s+/)[0].toLowerCase();
+  if (!/^[0-9a-f]{40}$/.test(expectedSha1)) throw new Error('Unexpected checksum format from Maven Central.');
+
+  let jar = fs.existsSync(jarPath) ? fs.readFileSync(jarPath) : null;
+  if (!jar || crypto.createHash('sha1').update(jar).digest('hex') !== expectedSha1) {
+    console.log(`   ⬇️  Downloading ZXing core ${ZXING_VERSION} from Maven Central...`);
+    jar = await download(ZXING_URL);
+  }
+  const actual = crypto.createHash('sha1').update(jar).digest('hex');
+  if (actual !== expectedSha1) throw new Error(`ZXing checksum mismatch: expected ${expectedSha1}, got ${actual}`);
+  fs.mkdirSync(libsDir, { recursive: true });
+  fs.writeFileSync(jarPath, jar);
+  console.log(`   ✅ ZXing core verified (sha1 ${actual}).`);
+  return jarPath;
+}
+
+function ensureKeystore(keytool) {
+  const alias = process.env.ANDROID_KEY_ALIAS || 'youpi_gateway';
+  const keystorePath = path.resolve(REPO_ROOT, process.env.ANDROID_KEYSTORE_PATH || 'data/android-release.keystore');
+  const passFile = `${keystorePath}.password`;
+  let password = process.env.ANDROID_KEYSTORE_PASSWORD;
+
+  if (!fs.existsSync(keystorePath)) {
+    password = password || crypto.randomBytes(24).toString('base64url');
+    fs.mkdirSync(path.dirname(keystorePath), { recursive: true });
+    run(keytool, [
+      '-genkeypair', '-keystore', keystorePath, '-alias', alias, '-keyalg', 'RSA', '-keysize', '3072',
+      '-validity', '10000', '-storepass', password, '-keypass', password,
+      '-dname', 'CN=YouPI SMS Gateway, O=Self-hosted, C=IN'
+    ], { stdio: 'pipe' });
+    if (!process.env.ANDROID_KEYSTORE_PASSWORD) {
+      fs.writeFileSync(passFile, password, { mode: 0o600 });
+    }
+    console.log(`   🔑 Created signing keystore at ${keystorePath} (keep it private and backed up; app updates must use the same key).`);
+  }
+  if (!password) {
+    if (!fs.existsSync(passFile)) fail(`Keystore exists at ${keystorePath} but no password: set ANDROID_KEYSTORE_PASSWORD.`);
+    password = fs.readFileSync(passFile, 'utf8').trim();
+  }
+  return { keystorePath, password, alias };
+}
+
+async function main() {
+  console.log('🚀 Building YouPI SMS Gateway APK from source...');
+
+  const sdk = process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT;
+  if (!sdk) fail('Set ANDROID_HOME (or ANDROID_SDK_ROOT) to your Android SDK.');
+  const buildToolsDir = path.join(sdk, 'build-tools', process.env.ANDROID_BUILD_TOOLS_VERSION || '34.0.0');
+  const androidJar = path.join(sdk, 'platforms', process.env.ANDROID_PLATFORM || 'android-34', 'android.jar');
+  const AAPT = resolveTool(buildToolsDir, 'aapt', '.exe');
+  const D8 = resolveTool(buildToolsDir, 'd8', '.bat');
+  const ZIPALIGN = resolveTool(buildToolsDir, 'zipalign', '.exe');
+  const APKSIGNER = resolveTool(buildToolsDir, 'apksigner', '.bat');
+  if (!AAPT || !D8 || !ZIPALIGN || !APKSIGNER) fail(`Android build-tools not found in ${buildToolsDir}.`);
+  if (!fs.existsSync(androidJar)) fail(`android.jar not found at ${androidJar}.`);
+  const JAVAC = javaTool('javac');
+  const KEYTOOL = javaTool('keytool');
+
+  const APP_DIR = path.resolve(REPO_ROOT, 'apps/android-observer-app/app');
+  const MANIFEST = path.join(APP_DIR, 'src/main/AndroidManifest.xml');
+  const RES_DIR = path.join(APP_DIR, 'src/main/res');
+  const JAVA_DIR = path.join(APP_DIR, 'src/main/java/com/youpi/observer');
+  const LIBS_DIR = path.join(APP_DIR, 'libs');
+
+  const WORK_DIR = path.resolve(REPO_ROOT, '.tmp_apk_build');
   fs.rmSync(WORK_DIR, { recursive: true, force: true });
-}
-fs.mkdirSync(WORK_DIR, { recursive: true });
+  const BIN_DIR = path.join(WORK_DIR, 'bin');
+  fs.mkdirSync(BIN_DIR, { recursive: true });
 
-const BIN_DIR = path.join(WORK_DIR, 'bin');
-fs.mkdirSync(BIN_DIR, { recursive: true });
-
-try {
-  // 1. Compile Java Source Code into Bytecode (.class)
-  console.log('📦 [1/6] Compiling Java source files with javac...');
-  const LIBS_DIR = path.resolve(APP_DIR, 'libs');
-  const libJars = fs.existsSync(LIBS_DIR)
-    ? fs.readdirSync(LIBS_DIR).filter(f => f.endsWith('.jar')).map(f => path.join(LIBS_DIR, f))
-    : [];
-  const cpSeparator = process.platform === 'win32' ? ';' : ':';
-  const classpath = [ANDROID_JAR, ...libJars].map(p => `"${p}"`).join(cpSeparator);
-
-  const javaFiles = fs.readdirSync(JAVA_DIR)
-    .filter(f => f.endsWith('.java'))
-    .map(f => `"${path.join(JAVA_DIR, f)}"`)
-    .join(' ');
-
-  execSync(`"${JAVAC}" -encoding UTF-8 -cp ${classpath} -d "${BIN_DIR}" ${javaFiles}`, {
-    stdio: 'inherit'
-  });
-  console.log('   ✅ Java compilation succeeded.');
-
-  // 2. Convert .class files to Dalvik Executable (classes.dex) using D8
-  console.log('⚡ [2/6] Converting Java bytecode to Dalvik Executable (classes.dex) with D8...');
-  const classFiles = [];
-  function collectClasses(dir) {
-    for (const item of fs.readdirSync(dir)) {
-      const p = path.join(dir, item);
-      if (fs.statSync(p).isDirectory()) {
-        collectClasses(p);
-      } else if (p.endsWith('.class')) {
-        classFiles.push(`"${p}"`);
-      }
-    }
-  }
-  collectClasses(BIN_DIR);
-
-  const d8Inputs = [...classFiles, ...libJars.map(j => `"${j}"`)];
-  execSync(`cmd.exe /c ""${D8}" --lib "${ANDROID_JAR}" --output "${WORK_DIR}" ${d8Inputs.join(' ')}"`, {
-    stdio: 'inherit'
-  });
-
-  const dexPath = path.join(WORK_DIR, 'classes.dex');
-  if (!fs.existsSync(dexPath)) {
-    throw new Error('D8 failed to generate classes.dex');
-  }
-  console.log(`   ✅ Dalvik classes.dex created (${fs.statSync(dexPath).size} bytes).`);
-
-  // 3. Package Resources and compiled binary AndroidManifest.xml into initial APK with AAPT
-  console.log('📜 [3/6] Packaging resources & compiled binary AndroidManifest with AAPT...');
-  const unalignedApk = path.join(WORK_DIR, 'unaligned.apk');
-  execSync(`"${AAPT}" package -f -M "${MANIFEST}" -S "${RES_DIR}" -I "${ANDROID_JAR}" -F "${unalignedApk}"`, {
-    stdio: 'inherit'
-  });
-
-  // Add classes.dex into unaligned APK
-  process.chdir(WORK_DIR);
-  execSync(`"${AAPT}" add -v "${unalignedApk}" classes.dex`, {
-    stdio: 'pipe'
-  });
-  console.log('   ✅ Base APK packaged with classes.dex and compiled binary manifest.');
-
-  // 4. Align 4-byte boundaries using zipalign
-  console.log('📐 [4/6] 4-byte boundary zip-aligning APK...');
-  const alignedApk = path.join(WORK_DIR, 'aligned.apk');
-  execSync(`"${ZIPALIGN}" -f -v 4 "${unalignedApk}" "${alignedApk}"`, {
-    stdio: 'pipe'
-  });
-  console.log('   ✅ APK 4-byte alignment verified.');
-
-  // 5. Generate Keystore & Sign APK with apksigner (v1, v2, and v3 signatures)
-  console.log('🔏 [5/6] Signing APK with Android v2 + v3 cryptographic certificate...');
-  const keystorePath = path.join(WORK_DIR, 'release.keystore');
-  const ksPass = 'youpipg123';
-  const alias = 'youpi_gateway';
-
-  execSync(`"${KEYTOOL}" -genkeypair -v -keystore "${keystorePath}" -alias "${alias}" -keyalg RSA -keysize 2048 -validity 10000 -storepass "${ksPass}" -keypass "${ksPass}" -dname "CN=YouPI SMS Gateway, OU=Merchant Payments, O=YouPI PG, L=Mumbai, ST=MH, C=IN"`, {
-    stdio: 'pipe'
-  });
-
-  const signedApk = path.join(WORK_DIR, 'signed.apk');
-  execSync(`cmd.exe /c ""${APKSIGNER}" sign --ks "${keystorePath}" --ks-pass pass:${ksPass} --key-pass pass:${ksPass} --ks-key-alias "${alias}" --out "${signedApk}" "${alignedApk}""`, {
-    stdio: 'inherit'
-  });
-
-  // Verify APK signature
-  const verifyOutput = execSync(`cmd.exe /c ""${APKSIGNER}" verify --verbose "${signedApk}""`, {
-    encoding: 'utf8'
-  });
-  console.log('   ✅ Verification Report:\n' + verifyOutput.trim().split('\n').map(l => '      ' + l).join('\n'));
-
-  // 6. Copy final APK to all distribution endpoints
-  console.log('🚚 [6/6] Distributing final APK to app portals...');
-  const apkBuffer = fs.readFileSync(signedApk);
-  const targets = [
-    path.resolve(REPO_ROOT, 'apps/android-observer-app/youpi-sms-gateway.apk'),
-    path.resolve(REPO_ROOT, 'apps/payment-api/public/youpi-sms-gateway.apk'),
-    path.resolve(REPO_ROOT, 'apps/merchant-admin/public/youpi-sms-gateway.apk')
-  ];
-
-  for (const t of targets) {
-    const dir = path.dirname(t);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(t, apkBuffer);
-    console.log(`   🎉 Saved signed installable APK: ${t} (${apkBuffer.length.toLocaleString()} bytes)`);
-  }
-
-  console.log('\n✨ Android APK compilation and signing completed successfully!');
-} finally {
   try {
-    process.chdir(REPO_ROOT);
-    if (fs.existsSync(WORK_DIR)) {
-      fs.rmSync(WORK_DIR, { recursive: true, force: true });
-    }
-  } catch {}
+    console.log('📦 [1/6] Fetching and verifying dependencies...');
+    const zxingJar = await ensureZxingJar(LIBS_DIR);
+
+    console.log('📦 [2/6] Compiling Java sources...');
+    const javaFiles = fs.readdirSync(JAVA_DIR).filter(f => f.endsWith('.java')).map(f => path.join(JAVA_DIR, f));
+    const classpath = [androidJar, zxingJar].join(path.delimiter);
+    run(JAVAC, ['-encoding', 'UTF-8', '--release', '17', '-cp', classpath, '-d', BIN_DIR, ...javaFiles]);
+
+    console.log('⚡ [3/6] Converting bytecode to classes.dex...');
+    const classFiles = [];
+    (function collect(dir) {
+      for (const item of fs.readdirSync(dir)) {
+        const p = path.join(dir, item);
+        if (fs.statSync(p).isDirectory()) collect(p);
+        else if (p.endsWith('.class')) classFiles.push(p);
+      }
+    })(BIN_DIR);
+    run(D8, ['--release', '--min-api', '26', '--lib', androidJar, '--output', WORK_DIR, ...classFiles, zxingJar]);
+    const dexPath = path.join(WORK_DIR, 'classes.dex');
+    if (!fs.existsSync(dexPath)) throw new Error('D8 did not produce classes.dex');
+
+    console.log('📜 [4/6] Packaging resources and manifest...');
+    const unalignedApk = path.join(WORK_DIR, 'unaligned.apk');
+    run(AAPT, ['package', '-f', '-M', MANIFEST, '-S', RES_DIR, '-I', androidJar, '-F', unalignedApk]);
+    run(AAPT, ['add', unalignedApk, 'classes.dex'], { cwd: WORK_DIR, stdio: 'pipe' });
+
+    console.log('📐 [5/6] Aligning and signing...');
+    const alignedApk = path.join(WORK_DIR, 'aligned.apk');
+    run(ZIPALIGN, ['-f', '4', unalignedApk, alignedApk], { stdio: 'pipe' });
+    const { keystorePath, password, alias } = ensureKeystore(KEYTOOL);
+    const signedApk = path.join(WORK_DIR, 'signed.apk');
+    run(APKSIGNER, ['sign', '--ks', keystorePath, '--ks-pass', `pass:${password}`, '--key-pass', `pass:${password}`, '--ks-key-alias', alias, '--out', signedApk, alignedApk]);
+    run(APKSIGNER, ['verify', signedApk]);
+
+    console.log('🚚 [6/6] Writing APK...');
+    const apk = fs.readFileSync(signedApk);
+    const outDir = path.resolve(REPO_ROOT, 'apps/android-observer-app/app/build/outputs/apk/release');
+    fs.mkdirSync(outDir, { recursive: true });
+    const outPath = path.join(outDir, 'youpi-sms-gateway.apk');
+    fs.writeFileSync(outPath, apk);
+    const sha256 = crypto.createHash('sha256').update(apk).digest('hex');
+    fs.writeFileSync(`${outPath}.sha256`, `${sha256}  youpi-sms-gateway.apk\n`);
+    console.log(`\n✨ Built ${outPath}\n   SHA-256: ${sha256}`);
+    console.log('   The Payment API serves this file at /youpi-sms-gateway.apk.');
+  } finally {
+    fs.rmSync(WORK_DIR, { recursive: true, force: true });
+  }
 }
+
+main().catch(err => fail(err.message));

@@ -372,8 +372,35 @@
       backdrop.addEventListener('mouseup', stopOutsideDismiss, true);
     }
 
+    /**
+     * SECURITY: only trust messages sent by our own checkout iframe.
+     * Any other window can call postMessage, so origin and source are both checked.
+     */
+    _isTrustedMessage(e) {
+      if (!this.iframe || e.source !== this.iframe.contentWindow) return false;
+      try {
+        const expectedOrigin = new URL(this.iframe.src, window.location.href).origin;
+        return e.origin === expectedOrigin;
+      } catch {
+        return false;
+      }
+    }
+
+    /**
+     * Returns an http(s) URL or null. Blocks javascript:, data: and similar schemes.
+     */
+    static _safeRedirectUrl(url) {
+      try {
+        const u = new URL(String(url || ''), window.location.href);
+        return (u.protocol === 'https:' || u.protocol === 'http:') ? u.href : null;
+      } catch {
+        return null;
+      }
+    }
+
     _handleMessage(e) {
       if (!e.data || typeof e.data !== 'object') return;
+      if (!this._isTrustedMessage(e)) return;
 
       const event = e.data.event;
       const rawData = e.data.data || e.data;
@@ -438,7 +465,7 @@
             const delim = this.options.failedUrl.includes('?') ? '&' : '?';
             window.location.href = `${this.options.failedUrl}${delim}order_id=${encodeURIComponent(result.order_id)}&reason=${encodeURIComponent(result.reason)}`;
           } else if (payload.redirectUrl && payload.redirectUrl !== window.location.href && !payload.redirectUrl.includes('/checkout')) {
-            window.location.href = payload.redirectUrl;
+            { const safe = YoupiCheckout._safeRedirectUrl(payload.redirectUrl); if (safe) window.location.href = safe; }
           }
         });
       } else if (event === 'youpi.payment_blocked' || event === 'youpi.payment_blocked_exit') {
@@ -497,7 +524,7 @@
             const delim = this.options.cancelledUrl.includes('?') ? '&' : '?';
             window.location.href = `${this.options.cancelledUrl}${delim}order_id=${encodeURIComponent(this.options.orderId || '')}`;
           } else if (redirectUrl && redirectUrl !== window.location.href && !redirectUrl.includes('/checkout')) {
-            window.location.href = redirectUrl;
+            { const safe = YoupiCheckout._safeRedirectUrl(redirectUrl); if (safe) window.location.href = safe; }
           }
         });
       }

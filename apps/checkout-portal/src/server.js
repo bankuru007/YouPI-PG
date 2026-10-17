@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { generateQrSvg } from './qr.js';
+import { internalRenderToken, proxyForwardingHeaders } from '@youpi/common';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -15,6 +16,19 @@ if (!process.env.BASE_PAYMENT_API_URL && typeof process.loadEnvFile === 'functio
       process.loadEnvFile(rootEnv);
     }
   } catch {}
+}
+
+const PAYMENT_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+
+function escapeHtml(value) {
+  if (value === null || value === undefined) return '';
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+    .replace(/`/g, '&#96;');
 }
 
 export class CheckoutServer {
@@ -49,7 +63,7 @@ export class CheckoutServer {
     try {
       const internalPort = process.env.PAYMENT_API_PORT || 6100;
       const res = await fetch(`http://127.0.0.1:${internalPort}/api/v1/checkout/${paymentId}/state`, {
-        headers: { 'X-Internal-Render': 'true' }
+        headers: internalRenderToken() ? { 'X-Internal-Render': internalRenderToken() } : {}
       });
       if (!res.ok) return null;
       return await res.json();
@@ -102,40 +116,47 @@ export class CheckoutServer {
     const downtimeAltBtnDisplay = ((sellingMode === 'ONLINE' && enabledMethods.includes('COD')) || (sellingMode === 'OFFLINE' && enabledMethods.includes('CASH_COUNTER'))) ? 'inline-block' : 'none';
     const downtimeAltBtnLabel = (sellingMode === 'ONLINE') ? 'Pay via Cash on Delivery Instead' : 'Pay by Cash at Till Instead';
 
-    html = html.replaceAll('{{PAYMENT_ID}}', paymentId);
-    html = html.replaceAll('{{API_BASE_URL}}', clientApiBase);
-    html = html.replaceAll('{{APP_NAME}}', appName);
-    html = html.replaceAll('{{PRIMARY_COLOR}}', primaryColor);
-    html = html.replaceAll('{{MERCHANT_NAME}}', merchantName);
-    html = html.replaceAll('{{ORDER_ID}}', orderId);
-    html = html.replaceAll('{{AMOUNT}}', state?.amount || '0.00');
-    html = html.replaceAll('{{VPA}}', vpa);
-    html = html.replaceAll('{{LOGO_URL}}', logoUrl);
-    html = html.replaceAll('{{SIDEBAR_NOTICE}}', sidebarNotice);
-    html = html.replaceAll('{{COUNTER_INSTRUCTIONS}}', counterInstructions);
-    html = html.replaceAll('{{SERVER_HEALTH_CLASS}}', healthClass);
-    html = html.replaceAll('{{SERVER_HEALTH_LABEL}}', healthLabel);
-    html = html.replaceAll('{{DOWNTIME_ALERT_STYLE}}', alertStyle);
-    html = html.replaceAll('{{DOWNTIME_ALERT_CLASS}}', alertClass);
-    html = html.replaceAll('{{DOWNTIME_HEADING}}', alertHeading);
-    html = html.replaceAll('{{DOWNTIME_MSG}}', alertMsg);
-    html = html.replaceAll('{{METHOD_SELECTOR_DISPLAY}}', showMethodBar);
-    html = html.replaceAll('{{TAB_COD_STYLE}}', tabCodStyle);
-    html = html.replaceAll('{{TAB_CASH_STYLE}}', tabCashStyle);
-    html = html.replaceAll('{{TAB_CARD_STYLE}}', tabCardStyle);
-    html = html.replaceAll('{{PC_COD_STYLE}}', pcCodStyle);
-    html = html.replaceAll('{{PC_CASH_STYLE}}', pcCashStyle);
-    html = html.replaceAll('{{PC_CARD_STYLE}}', pcCardStyle);
-    html = html.replaceAll('{{DOWNTIME_ALT_BTN_DISPLAY}}', downtimeAltBtnDisplay);
-    html = html.replaceAll('{{DOWNTIME_ALT_BTN_LABEL}}', downtimeAltBtnLabel);
-    html = html.replaceAll('{{INITIAL_STATE_JSON}}', JSON.stringify(state || {}).replaceAll('<', '\\u003c'));
+    html = html.replaceAll('{{PAYMENT_ID}}', () => escapeHtml(paymentId));
+    html = html.replaceAll('{{API_BASE_URL}}', () => escapeHtml(clientApiBase));
+    html = html.replaceAll('{{APP_NAME}}', () => escapeHtml(appName));
+    html = html.replaceAll('{{PRIMARY_COLOR}}', () => escapeHtml(primaryColor));
+    html = html.replaceAll('{{MERCHANT_NAME}}', () => escapeHtml(merchantName));
+    html = html.replaceAll('{{ORDER_ID}}', () => escapeHtml(orderId));
+    html = html.replaceAll('{{AMOUNT}}', () => escapeHtml(state?.amount || '0.00'));
+    html = html.replaceAll('{{VPA}}', () => escapeHtml(vpa));
+    html = html.replaceAll('{{LOGO_URL}}', () => escapeHtml(logoUrl));
+    html = html.replaceAll('{{SIDEBAR_NOTICE}}', () => escapeHtml(sidebarNotice));
+    html = html.replaceAll('{{COUNTER_INSTRUCTIONS}}', () => escapeHtml(counterInstructions));
+    html = html.replaceAll('{{SERVER_HEALTH_CLASS}}', () => escapeHtml(healthClass));
+    html = html.replaceAll('{{SERVER_HEALTH_LABEL}}', () => escapeHtml(healthLabel));
+    html = html.replaceAll('{{DOWNTIME_ALERT_STYLE}}', () => escapeHtml(alertStyle));
+    html = html.replaceAll('{{DOWNTIME_ALERT_CLASS}}', () => escapeHtml(alertClass));
+    html = html.replaceAll('{{DOWNTIME_HEADING}}', () => escapeHtml(alertHeading));
+    html = html.replaceAll('{{DOWNTIME_MSG}}', () => escapeHtml(alertMsg));
+    html = html.replaceAll('{{METHOD_SELECTOR_DISPLAY}}', () => escapeHtml(showMethodBar));
+    html = html.replaceAll('{{TAB_COD_STYLE}}', () => escapeHtml(tabCodStyle));
+    html = html.replaceAll('{{TAB_CASH_STYLE}}', () => escapeHtml(tabCashStyle));
+    html = html.replaceAll('{{TAB_CARD_STYLE}}', () => escapeHtml(tabCardStyle));
+    html = html.replaceAll('{{PC_COD_STYLE}}', () => escapeHtml(pcCodStyle));
+    html = html.replaceAll('{{PC_CASH_STYLE}}', () => escapeHtml(pcCashStyle));
+    html = html.replaceAll('{{PC_CARD_STYLE}}', () => escapeHtml(pcCardStyle));
+    html = html.replaceAll('{{DOWNTIME_ALT_BTN_DISPLAY}}', () => escapeHtml(downtimeAltBtnDisplay));
+    html = html.replaceAll('{{DOWNTIME_ALT_BTN_LABEL}}', () => escapeHtml(downtimeAltBtnLabel));
+    html = html.replaceAll('{{INITIAL_STATE_JSON}}', () => JSON.stringify(state || {}).replaceAll('<', '\\u003c'));
 
     return html;
   }
 
   createServer() {
     return http.createServer(async (req, res) => {
-      const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+      let url;
+      try {
+        url = new URL(req.url, 'http://localhost');
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'text/plain' });
+        res.end('Bad Request');
+        return;
+      }
       const pathname = url.pathname;
 
       // Health
@@ -155,6 +176,7 @@ export class CheckoutServer {
           method: req.method,
           headers: {
             ...req.headers,
+            ...proxyForwardingHeaders(req),
             host: `localhost:${targetPort}`,
             'x-forwarded-host': req.headers.host || '',
             'x-forwarded-proto': req.headers['x-forwarded-proto'] || 'https'
@@ -218,6 +240,11 @@ export class CheckoutServer {
       const qrMatch = pathname.match(/^\/checkout\/([^/]+)\/qr\.svg$/);
       if (qrMatch) {
         const paymentId = qrMatch[1];
+        if (!PAYMENT_ID_RE.test(paymentId)) {
+          res.writeHead(404, { 'Content-Type': 'text/plain' });
+          res.end('Not Found');
+          return;
+        }
         const state = await this.fetchPaymentState(paymentId);
         const upiUri = state?.upiUri || `upi://pay?pa=${encodeURIComponent(state?.payeeVpa || 'merchant@upi')}&pn=${encodeURIComponent(state?.merchantName || 'Store')}&am=${encodeURIComponent(state?.amount || '100.00')}&tn=${encodeURIComponent(paymentId)}`;
 
@@ -237,6 +264,11 @@ export class CheckoutServer {
       const checkoutMatch = pathname.match(/^\/checkout\/([^/]+)$/);
       if (checkoutMatch) {
         const paymentId = checkoutMatch[1];
+        if (!PAYMENT_ID_RE.test(paymentId)) {
+          res.writeHead(404, { 'Content-Type': 'text/plain' });
+          res.end('Checkout Page Not Found');
+          return;
+        }
         const state = await this.fetchPaymentState(paymentId);
 
         const rendered = this.renderHtml(paymentId, state);

@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import { EventEmitter } from 'node:events';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { PaymentStatus } from '@youpi/common';
+import { PaymentStatus, observerAuthHeaders } from '@youpi/common';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -40,6 +40,7 @@ import {
   PaymentVerificationPipeline
 } from '@youpi/core';
 import { HttpServer } from './server.js';
+import { accessGuard } from './security/access-guard.js';
 import { registerPaymentRoutes } from './routes/payments.routes.js';
 import { registerCheckoutRoutes } from './routes/checkout.routes.js';
 import { registerPollerRoutes } from './routes/pollers.routes.js';
@@ -112,6 +113,8 @@ export function createPaymentApp(customDb = null, options = {}) {
   });
 
   const server = new HttpServer();
+  // SECURITY: admin, observer-ingestion and payment-simulation routes require tokens.
+  server.use(accessGuard);
   let checkoutBaseUrl = process.env.BASE_CHECKOUT_URL || 'http://localhost:7000';
   try {
     const rootEnv = path.resolve(__dirname, '../../../.env');
@@ -258,13 +261,13 @@ export function createPaymentApp(customDb = null, options = {}) {
         // Sweep 1: Google Messages Web SMS
         try {
           const smsPort = Number(process.env.SMS_OBSERVER_PORT || 6002);
-          fetch(`http://localhost:${smsPort}/api/sweep`, { method: 'POST', signal: AbortSignal.timeout(1200) }).catch(() => {});
+          fetch(`http://localhost:${smsPort}/api/sweep`, { method: 'POST', headers: observerAuthHeaders(), signal: AbortSignal.timeout(1200) }).catch(() => {});
         } catch {}
 
         // Sweep 2: Gmail Inbox
         try {
           const gmailPort = Number(process.env.GMAIL_OBSERVER_PORT || 6003);
-          fetch(`http://localhost:${gmailPort}/api/sweep`, { method: 'POST', signal: AbortSignal.timeout(1200) }).catch(() => {});
+          fetch(`http://localhost:${gmailPort}/api/sweep`, { method: 'POST', headers: observerAuthHeaders(), signal: AbortSignal.timeout(1200) }).catch(() => {});
         } catch {}
 
         // Sweep 3: Check pending/unattributed Android push notifications in DB
@@ -351,13 +354,13 @@ export function createPaymentApp(customDb = null, options = {}) {
       // 1. Poll SMS Observer
       try {
         const smsPort = Number(process.env.SMS_OBSERVER_PORT || 6002);
-        fetch(`http://localhost:${smsPort}/api/sweep`, { method: 'POST', signal: AbortSignal.timeout(800) }).catch(() => {});
+        fetch(`http://localhost:${smsPort}/api/sweep`, { method: 'POST', headers: observerAuthHeaders(), signal: AbortSignal.timeout(800) }).catch(() => {});
       } catch {}
 
       // 2. Poll Gmail Observer
       try {
         const gmailPort = Number(process.env.GMAIL_OBSERVER_PORT || 6003);
-        fetch(`http://localhost:${gmailPort}/api/sweep`, { method: 'POST', signal: AbortSignal.timeout(800) }).catch(() => {});
+        fetch(`http://localhost:${gmailPort}/api/sweep`, { method: 'POST', headers: observerAuthHeaders(), signal: AbortSignal.timeout(800) }).catch(() => {});
       } catch {}
 
       // 3. Sweep any pending unattributed observations in DB matching active sessions

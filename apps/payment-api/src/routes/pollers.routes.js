@@ -1,10 +1,11 @@
 import crypto from 'node:crypto';
+import { isAdminRequest } from '../security/access-guard.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { HttpServer } from '../server.js';
+import { HttpServer, readBody } from '../server.js';
 import { ObservationNormalizer, BankSmsParser, BankEmailParser, generateQrSvg } from '@youpi/core';
-import { toRupeesString, toPaise, verifyHmac, resolveRuntimeUrls } from '@youpi/common';
+import { toRupeesString, toPaise, verifyHmac, resolveRuntimeUrls, getStrongSecret, safeEqual } from '@youpi/common';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -23,7 +24,8 @@ const __dirname = path.dirname(__filename);
  * }} ctx
  */
 export function registerPollerRoutes(server, ctx) {
-  const enrollmentSecret = process.env.ANDROID_ENROLLMENT_SECRET || 'android_pairing_enrollment_secret_key_32_chars';
+  // SECURITY: the pairing secret must be configured; the old placeholder and hardcoded fallbacks are rejected.
+  const getEnrollmentSecret = () => getStrongSecret('ANDROID_ENROLLMENT_SECRET');
 
   // GET /api/v1/pollers/active-window (Enables deep intelligent DOM scanning for active amounts and dual-layer verification)
   server.get('/api/v1/pollers/active-window', async (req, res) => {
@@ -55,6 +57,8 @@ export function registerPollerRoutes(server, ctx) {
 
   // POST /api/v1/pollers/events (Universal Observation Ingest for Gmail / SMS 2-Layer Observers)
   server.post('/api/v1/pollers/events', async (req, res) => {
+    // Access to this route is enforced by the access guard (observer or admin token).
+    const callerIsAdmin = isAdminRequest(req);
     const body = await HttpServer.parseBody(req);
 
     if (!body.receivingAccountId || !body.source) {
@@ -73,8 +77,9 @@ export function registerPollerRoutes(server, ctx) {
         sender,
         receivingAccountId: body.receivingAccountId,
         paymentSessionId: body.paymentSessionId,
-        isTest: Boolean(body.isTest),
-        testModeActive: Boolean(body.testModeActive)
+        // SECURITY: test flags relax sender checks, so only an admin caller may set them.
+        isTest: callerIsAdmin && Boolean(body.isTest),
+        testModeActive: callerIsAdmin && Boolean(body.testModeActive)
       });
 
       if (pipeResult.status === 'REJECTED' && pipeResult.failingCondition === 'FRAUDULENT_PAYMENT_INJECTION') {
@@ -147,11 +152,17 @@ export function registerPollerRoutes(server, ctx) {
     const body = await HttpServer.parseBody(req);
     const token = body.enrollmentToken || body.token;
     const merchantId = body.merchantId || '00000000-0000-0000-0000-000000000001';
-    const deviceName = body.deviceName || 'Android SMS Gateway';
-    const deviceModel = body.deviceModel || 'Android Device';
+    const cleanLabel = v => String(v || '').replace(/[\u0000-\u001f\u007f<>"'`]/g, '').trim().slice(0, 80);
+    const deviceName = cleanLabel(body.deviceName) || 'Android SMS Gateway';
+    const deviceModel = cleanLabel(body.deviceModel) || 'Android Device';
 
     // Verify enrollment token against system secret or merchant token
-    if (!token || (token !== enrollmentSecret && token !== `pair_${merchantId.slice(0, 8)}` && token !== 'youpi_sms_pair_token_secure')) {
+    const configuredSecret = getEnrollmentSecret();
+    if (!configuredSecret) {
+      HttpServer.json(res, 503, { error: 'Device pairing is disabled: set ANDROID_ENROLLMENT_SECRET (at least 32 random characters) in .env.' });
+      return;
+    }
+    if (!token || !safeEqual(String(token), configuredSecret)) {
       HttpServer.json(res, 401, { error: 'Invalid or expired device pairing enrollment token.' });
       return;
     }
@@ -204,11 +215,13 @@ export function registerPollerRoutes(server, ctx) {
 
   // --- ANDROID SMS GATEWAY OBSERVATION INGESTION ---
   const handleAndroidSmsEvents = async (req, res) => {
-    const rawBodyText = await new Promise(resolve => {
-      let data = '';
-      req.on('data', chunk => { data += chunk; });
-      req.on('end', () => resolve(data));
-    });
+    let rawBodyText;
+    try {
+      rawBodyText = await readBody(req, 64 * 1024);
+    } catch (err) {
+      HttpServer.json(res, err.statusCode || 400, { error: err.message });
+      return;
+    }
 
     let body = {};
     try {
@@ -231,11 +244,16 @@ export function registerPollerRoutes(server, ctx) {
       return;
     }
 
-    // Verify HMAC Signature & Replay Drift Protection if headers are present
+    // Verify HMAC Signature & Replay Drift Protection (mandatory for every event)
     const timestampStr = req.headers['x-timestamp'];
     const signature = req.headers['x-signature'];
 
-    if (timestampStr && signature && device.signing_key_hash) {
+    if (!timestampStr || !signature || !device.signing_key_hash || !/^[0-9a-fA-F]{64}$/.test(String(signature))) {
+      HttpServer.json(res, 401, { error: 'Missing or malformed X-Timestamp / X-Signature headers. Signed requests are required.' });
+      return;
+    }
+
+    {
       const ts = Number(timestampStr);
       const now = Date.now();
       if (isNaN(ts) || Math.abs(now - ts) > 60000) {
@@ -296,7 +314,7 @@ export function registerPollerRoutes(server, ctx) {
         sender: body.sender || req.headers['x-sender'],
         receivingAccountId,
         paymentSessionId: body.paymentSessionId,
-        isTest: Boolean(body.isTest),
+        isTest: false, // devices may never mark their own observations as test traffic
         deviceInfo: device ? `${device.device_name} (${device.device_model})` : 'Android SMS Gateway'
       });
 
@@ -397,7 +415,11 @@ export function registerPollerRoutes(server, ctx) {
     // Canonical runtime URL derivation (Part C2)
     const runtime = resolveRuntimeUrls(merchant?.branding || {});
     const baseUrl = runtime.apiUrl;
-    const token = enrollmentSecret;
+    const token = getEnrollmentSecret();
+    if (!token) {
+      HttpServer.json(res, 503, { error: 'Device pairing is disabled: set ANDROID_ENROLLMENT_SECRET (at least 32 random characters) in .env.' });
+      return;
+    }
     const sessionId = crypto.randomUUID();
     const expiresAt = Date.now() + (10 * 60 * 1000); // 10 minutes
 
@@ -502,39 +524,24 @@ export function registerPollerRoutes(server, ctx) {
 
   // GET /api/v1/admin/sms-gateway/download-apk & GET /youpi-sms-gateway.apk
   const serveApk = async (req, res) => {
-    const apkLocations = [
-      path.resolve(__dirname, '../../public/youpi-sms-gateway.apk'),
-      path.resolve(__dirname, '../../../merchant-admin/public/youpi-sms-gateway.apk'),
-      path.resolve(__dirname, '../../../android-observer-app/app/build/outputs/apk/release/youpi-sms-gateway.apk'),
-      path.resolve(__dirname, '../../../android-observer-app/youpi-sms-gateway.apk')
-    ];
-
-    let foundPath = null;
-    for (const p of apkLocations) {
-      if (fs.existsSync(p)) {
-        foundPath = p;
-        break;
-      }
+    // SECURITY: only serve an APK built locally from source (scripts/build-android-apk.js).
+    // Prebuilt binaries are no longer shipped in the repository.
+    const apkPath = path.resolve(__dirname, '../../../android-observer-app/app/build/outputs/apk/release/youpi-sms-gateway.apk');
+    if (!fs.existsSync(apkPath)) {
+      HttpServer.json(res, 404, {
+        error: 'Android app not built yet. Run "node scripts/build-android-apk.js" (see docs/ANDROID_MOBILE_APP.md).'
+      });
+      return;
     }
 
-    if (!foundPath) {
-      // Create a fallback stub APK binary file if build hasn't outputted yet
-      const fallbackDir = path.resolve(__dirname, '../../public');
-      if (!fs.existsSync(fallbackDir)) fs.mkdirSync(fallbackDir, { recursive: true });
-      foundPath = path.join(fallbackDir, 'youpi-sms-gateway.apk');
-      if (!fs.existsSync(foundPath)) {
-        fs.writeFileSync(foundPath, Buffer.from('PK\x03\x04YOUPI_SMS_GATEWAY_STANDALONE_APK_PACKAGE'));
-      }
-    }
-
-    const stat = fs.statSync(foundPath);
+    const stat = fs.statSync(apkPath);
     res.writeHead(200, {
       'Content-Type': 'application/vnd.android.package-archive',
       'Content-Disposition': 'attachment; filename="youpi-sms-gateway.apk"',
       'Content-Length': stat.size,
-      'Access-Control-Allow-Origin': '*'
+      'X-Content-Type-Options': 'nosniff'
     });
-    fs.createReadStream(foundPath).pipe(res);
+    fs.createReadStream(apkPath).pipe(res);
   };
 
   server.get('/api/v1/admin/sms-gateway/download-apk', serveApk);

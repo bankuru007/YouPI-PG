@@ -1,9 +1,20 @@
 import crypto from 'node:crypto';
 import { HttpServer } from '../server.js';
-import { PaymentStatus, PaymentMethod, SellingMode, AuditActorType, isValidVpa, toRupeesString, deriveCloudflareRoutes, resolveRuntimeUrls } from '@youpi/common';
+import { PaymentStatus, PaymentMethod, SellingMode, AuditActorType, isValidVpa, toRupeesString, deriveCloudflareRoutes, resolveRuntimeUrls, parseCloudflareTunnelToken, resolveGmailRedirectUri, createOAuthState, observerAuthHeaders } from '@youpi/common';
 import { PaymentVerificationPipeline } from '@youpi/core';
 import { globalTunnelManager } from '../services/tunnel-manager.js';
 import { formatQrDataUrl } from '../services/whatsapp-berry.service.js';
+
+// Webhook endpoints must be http(s) URLs (blocks file:, data:, javascript: and similar).
+function isValidWebhookUrl(value) {
+  if (!value) return true;
+  try {
+    const u = new URL(String(value));
+    return u.protocol === 'https:' || u.protocol === 'http:';
+  } catch {
+    return false;
+  }
+}
 
 function resolveSellingModeAndMethods(body, currentBranding = {}) {
   const inputBranding = body.branding || {};
@@ -181,7 +192,7 @@ export function registerAdminRoutes(server, ctx) {
     let smsStatus = { status: 'STANDBY', isPaired: false, messagesObserved: 0 };
     try {
       const smsPort = Number(process.env.SMS_OBSERVER_PORT || 6002);
-      const smsRes = await fetch(`http://localhost:${smsPort}/api/browser/status`, { signal: AbortSignal.timeout(1500) });
+      const smsRes = await fetch(`http://localhost:${smsPort}/api/browser/status`, { signal: AbortSignal.timeout(1500), headers: observerAuthHeaders() });
       if (smsRes.ok) {
         smsStatus = await smsRes.json();
       }
@@ -191,7 +202,7 @@ export function registerAdminRoutes(server, ctx) {
     let gmailStatus = { status: 'STANDBY', isLoggedIn: false, emailsObserved: 0 };
     try {
       const gmailPort = Number(process.env.GMAIL_OBSERVER_PORT || 6003);
-      const gmailRes = await fetch(`http://localhost:${gmailPort}/api/browser/status`, { signal: AbortSignal.timeout(1500) });
+      const gmailRes = await fetch(`http://localhost:${gmailPort}/api/browser/status`, { headers: observerAuthHeaders(), signal: AbortSignal.timeout(1500) });
       if (gmailRes.ok) {
         gmailStatus = await gmailRes.json();
       }
@@ -274,6 +285,12 @@ export function registerAdminRoutes(server, ctx) {
     const session = ctx.sessionRepo.findById(paymentId);
     if (!session) {
       HttpServer.json(res, 404, { error: `Payment session not found: ${paymentId}` });
+      return;
+    }
+
+    // Never flip a finished session (e.g. FAILED/EXPIRED/CANCELLED) to SUCCESS.
+    if ([PaymentStatus.SUCCESS, PaymentStatus.FAILED, PaymentStatus.EXPIRED, PaymentStatus.CANCELLED].includes(session.status)) {
+      HttpServer.json(res, 409, { error: `Payment session is already ${session.status} and cannot be confirmed.` });
       return;
     }
 
@@ -701,6 +718,10 @@ export function registerAdminRoutes(server, ctx) {
       updates.businessName = body.businessName.trim();
     }
     if (body.webhookUrl !== undefined) {
+      if (!isValidWebhookUrl(body.webhookUrl?.trim())) {
+        HttpServer.json(res, 400, { error: 'webhookUrl must be an http(s) URL.' });
+        return;
+      }
       updates.webhookUrl = body.webhookUrl?.trim() || null;
     }
     if (body.webhookSecret !== undefined && body.webhookSecret.trim()) {
@@ -901,6 +922,10 @@ export function registerAdminRoutes(server, ctx) {
     else if (inputBranding.businessName && inputBranding.businessName.trim()) updates.businessName = inputBranding.businessName.trim();
     if (body.webhookUrl !== undefined) updates.webhookUrl = body.webhookUrl?.trim() || null;
     else if (inputBranding.webhookUrl !== undefined) updates.webhookUrl = inputBranding.webhookUrl?.trim() || null;
+    if (updates.webhookUrl && !isValidWebhookUrl(updates.webhookUrl)) {
+      HttpServer.json(res, 400, { error: 'webhookUrl must be an http(s) URL.' });
+      return;
+    }
     if (body.webhookSecret !== undefined && body.webhookSecret.trim()) updates.webhookSecret = body.webhookSecret.trim();
 
     if (
@@ -999,7 +1024,16 @@ export function registerAdminRoutes(server, ctx) {
         mergedBranding.customDomain = (body.customDomain || inputBranding.customDomain || '').trim();
       }
       if (body.cloudflareTunnelCommand !== undefined || inputBranding.cloudflareTunnelCommand !== undefined) {
-        mergedBranding.cloudflareTunnelCommand = (body.cloudflareTunnelCommand !== undefined ? body.cloudflareTunnelCommand : inputBranding.cloudflareTunnelCommand)?.trim() || '';
+        const tunnelCmd = (body.cloudflareTunnelCommand !== undefined ? body.cloudflareTunnelCommand : inputBranding.cloudflareTunnelCommand)?.trim() || '';
+        if (tunnelCmd) {
+          try {
+            parseCloudflareTunnelToken(tunnelCmd);
+          } catch (err) {
+            HttpServer.json(res, 400, { error: err.message });
+            return;
+          }
+        }
+        mergedBranding.cloudflareTunnelCommand = tunnelCmd;
       }
 
       updates.branding = mergedBranding;
@@ -1389,6 +1423,13 @@ export function registerAdminRoutes(server, ctx) {
     }
 
     try {
+      parseCloudflareTunnelToken(command);
+    } catch (err) {
+      HttpServer.json(res, 400, { success: false, error: err.message });
+      return;
+    }
+
+    try {
       // Save command in merchant branding if provided
       const merchant = resolveMerchant(req);
       if (merchant && body.command) {
@@ -1418,7 +1459,7 @@ export function registerAdminRoutes(server, ctx) {
     const branding = merchant?.branding || {};
     const gmailConfig = branding.gmailConfig || {};
 
-    const redirectUri = 'https://pay-gmail.gauravtesting.online/oauth/callback';
+    const redirectUri = resolveGmailRedirectUri();
     const hasToken = Boolean(gmailConfig.refreshToken && gmailConfig.refreshToken.trim());
 
     HttpServer.json(res, 200, {
@@ -1461,9 +1502,11 @@ export function registerAdminRoutes(server, ctx) {
       });
       return;
     }
-    const redirectUri = 'https://pay-gmail.gauravtesting.online/oauth/callback';
+    const redirectUri = resolveGmailRedirectUri();
     const scopes = encodeURIComponent('https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/userinfo.email');
-    const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=${scopes}&access_type=offline&prompt=consent&include_granted_scopes=true`;
+    // Signed state protects the callback against OAuth CSRF (see gmail-observer /oauth/callback).
+    const state = createOAuthState();
+    const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=${scopes}&access_type=offline&prompt=consent&include_granted_scopes=true&state=${encodeURIComponent(state || '')}`;
 
     HttpServer.json(res, 200, {
       success: true,
@@ -1515,7 +1558,7 @@ export function registerAdminRoutes(server, ctx) {
 
     // Stop poller in observer service
     try {
-      await fetch(`http://127.0.0.1:${process.env.GMAIL_OBSERVER_PORT || 6003}/stop`, { method: 'POST' }).catch(() => {});
+      await fetch(`http://127.0.0.1:${process.env.GMAIL_OBSERVER_PORT || 6003}/stop`, { method: 'POST', headers: observerAuthHeaders() }).catch(() => {});
     } catch {}
 
     HttpServer.json(res, 200, {

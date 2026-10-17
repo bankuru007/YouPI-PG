@@ -1,4 +1,4 @@
-import { generateHmac } from '@youpi/common';
+import { generateHmac, observerAuthHeaders } from '@youpi/common';
 
 export class PaymentObserverClient {
   /**
@@ -42,7 +42,7 @@ export class PaymentObserverClient {
 
     const res = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...observerAuthHeaders() },
       body: JSON.stringify(payload)
     });
 

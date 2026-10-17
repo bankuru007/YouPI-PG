@@ -59,6 +59,7 @@ export function isValidMobile(mobile) {
  * @returns {boolean}
  */
 export function isValidPassword(password) {
-  return typeof password === 'string' && password.length >= 6;
+  // 8-128 characters; the upper bound stops very long inputs from slowing PBKDF2.
+  return typeof password === 'string' && password.length >= 8 && password.length <= 128;
 }
 

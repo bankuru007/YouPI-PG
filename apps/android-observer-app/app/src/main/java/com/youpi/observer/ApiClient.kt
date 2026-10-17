@@ -159,7 +159,7 @@ class ApiClient(private val context: Context) {
         val signingKey = prefs.getString("signing_key", null) ?: return false
         val baseUrl = getBaseUrl()
 
-        val tsStr = timestamp.toString()
+        val tsStr = System.currentTimeMillis().toString() // signature time is now; SMS time is in the body
         val url = "$baseUrl/api/v1/observers/sms"
 
         val bodyJson = JSONObject().apply {

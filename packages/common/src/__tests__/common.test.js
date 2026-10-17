@@ -81,7 +81,7 @@ describe('@youpi/common Unit Tests', () => {
     test('hashes and verifies passwords securely', () => {
       const pass = 'CorrectHorseBatteryStaple!42';
       const hash = hashPassword(pass);
-      assert.ok(hash.startsWith('100000:'));
+      assert.ok(hash.startsWith('210000:'));
 
       assert.equal(verifyPassword(pass, hash), true);
       assert.equal(verifyPassword('WrongPassword', hash), false);

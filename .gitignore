@@ -48,3 +48,12 @@ Thumbs.db
 !packages/**
 !docs/**
 !assets/**
+
+# Android build outputs and signing material (never commit binaries or keys)
+*.apk
+*.keystore
+*.keystore.password
+*.jks
+apps/android-observer-app/app/libs/*.jar
+apps/android-observer-app/app/build/
+.tmp_apk_build/

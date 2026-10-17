@@ -1,3 +1,4 @@
+import { observerAuthHeaders } from '@youpi/common';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -39,7 +40,7 @@ export class GmailBrowserAutomator {
 
   async fetchActivePaymentAmounts() {
     try {
-      const res = await fetch(`${this.apiBaseUrl}/api/v1/pollers/active-window`, { signal: AbortSignal.timeout(1500) });
+      const res = await fetch(`${this.apiBaseUrl}/api/v1/pollers/active-window`, { signal: AbortSignal.timeout(1500), headers: observerAuthHeaders() });
       if (res.ok) {
         const data = await res.json();
         return data.sessions || [];

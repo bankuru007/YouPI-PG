@@ -4137,6 +4137,26 @@
 
   <script id="ypgInitialState" type="application/json">{{INITIAL_STATE_JSON}}</script>
   <script>
+    function escapeHtml(str) {
+      if (str === null || str === undefined) return '';
+      return String(str).replace(/[&<>"'`]/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;', '`': '&#96;' })[m]);
+    }
+
+    // Safe value for a JS string argument inside an HTML attribute, e.g. onclick="fn(${jsAttr(id)})"
+    function jsAttr(value) {
+      return escapeHtml(JSON.stringify(value === null || value === undefined ? '' : String(value)));
+    }
+
+    // Only allow http(s) links from configuration (blocks javascript: URLs).
+    function safeUrl(value) {
+      try {
+        const u = new URL(String(value || ''), window.location.href);
+        return (u.protocol === 'https:' || u.protocol === 'http:') ? u.href : '#';
+      } catch {
+        return '#';
+      }
+    }
+
     const PAYMENT_ID = "{{PAYMENT_ID}}";
     const API_BASE = "{{API_BASE_URL}}";
 
@@ -4437,19 +4457,19 @@
             const initial = (acc.name || 'U').charAt(0).toUpperCase();
             const isActive = activeCustomer && activeCustomer.id === acc.id;
             html += `
-              <div class="saved-account-row ${isActive ? 'active' : ''}" onclick="handleSelectSavedAccount('${acc.id}', event)">
+              <div class="saved-account-row ${isActive ? 'active' : ''}" onclick="handleSelectSavedAccount(${jsAttr(acc.id)}, event)">
                 <div style="display:flex; align-items:center; gap:8px;">
-                  <div style="width:28px; height:28px; border-radius:50%; background:#e0f2fe; color:#0369a1; font-weight:800; font-size:12px; display:flex; align-items:center; justify-content:center;">${initial}</div>
+                  <div style="width:28px; height:28px; border-radius:50%; background:#e0f2fe; color:#0369a1; font-weight:800; font-size:12px; display:flex; align-items:center; justify-content:center;">${escapeHtml(initial)}</div>
                   <div>
                     <div style="font-size:13px; font-weight:700;">${escapeHtml(acc.name)}</div>
                     <div style="font-size:11px; color:#64748b;">${escapeHtml(acc.email || '')} ${acc.mobileNumber ? '&bull; ' + escapeHtml(acc.mobileNumber) : ''}</div>
                   </div>
                 </div>
                 <div style="display:flex; align-items:center; gap:6px;">
-                  <button type="button" class="ypg-btn-select-account" style="background:#eff6ff; border:1px solid #bfdbfe; color:var(--ypg-blue); font-size:11px; font-weight:700; padding:4px 10px; border-radius:6px; cursor:pointer; display:inline-flex; align-items:center; gap:2px; transition:all 0.15s;" onclick="handleSelectSavedAccount('${acc.id}', event)">
+                  <button type="button" class="ypg-btn-select-account" style="background:#eff6ff; border:1px solid #bfdbfe; color:var(--ypg-blue); font-size:11px; font-weight:700; padding:4px 10px; border-radius:6px; cursor:pointer; display:inline-flex; align-items:center; gap:2px; transition:all 0.15s;" onclick="handleSelectSavedAccount(${jsAttr(acc.id)}, event)">
                     <span>Select</span> &rsaquo;
                   </button>
-                  <button type="button" style="background:none; border:none; color:#94a3b8; font-size:14px; cursor:pointer; padding:2px 6px;" onclick="removeRememberedAccount('${acc.id}', event)" title="Remove Account">✕</button>
+                  <button type="button" style="background:none; border:none; color:#94a3b8; font-size:14px; cursor:pointer; padding:2px 6px;" onclick="removeRememberedAccount(${jsAttr(acc.id)}, event)" title="Remove Account">✕</button>
                 </div>
               </div>
             `;
@@ -5010,10 +5030,7 @@
       renderSavedAccountsUI();
     }
 
-    function escapeHtml(str) {
-      if (!str) return '';
-      return String(str).replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[m]);
-    }
+
 
     let currentSelectedMethod = 'UPI';
 
@@ -5299,14 +5316,14 @@
           alert(data.error || 'Failed to place COD order');
           if (btn) {
             btn.disabled = false;
-            btn.innerHTML = '<span>Confirm &amp; Place COD Order (₹' + (state?.amount || '{{AMOUNT}}') + ')</span> &rsaquo;';
+            btn.innerHTML = '<span>Confirm &amp; Place COD Order (₹' + escapeHtml(state?.amount || '{{AMOUNT}}') + ')</span> &rsaquo;';
           }
         }
       } catch (e) {
         alert('Network error confirming COD order.');
         if (btn) {
           btn.disabled = false;
-          btn.innerHTML = '<span>Confirm &amp; Place COD Order (₹' + (state?.amount || '{{AMOUNT}}') + ')</span> &rsaquo;';
+          btn.innerHTML = '<span>Confirm &amp; Place COD Order (₹' + escapeHtml(state?.amount || '{{AMOUNT}}') + ')</span> &rsaquo;';
         }
       }
     }
@@ -5582,10 +5599,10 @@
       if (!container) return;
       let html = '';
       if (branding.privacyPolicyUrl) {
-        html += `<a href="${branding.privacyPolicyUrl}" target="_blank" rel="noopener noreferrer" style="color:var(--ypg-blue); text-decoration:underline; font-weight:600;">Privacy Policy &nearr;</a>`;
+        html += `<a href="${escapeHtml(safeUrl(branding.privacyPolicyUrl))}" target="_blank" rel="noopener noreferrer" style="color:var(--ypg-blue); text-decoration:underline; font-weight:600;">Privacy Policy &nearr;</a>`;
       }
       if (branding.termsUrl) {
-        html += `<a href="${branding.termsUrl}" target="_blank" rel="noopener noreferrer" style="color:var(--ypg-blue); text-decoration:underline; font-weight:600;">Terms of Service &nearr;</a>`;
+        html += `<a href="${escapeHtml(safeUrl(branding.termsUrl))}" target="_blank" rel="noopener noreferrer" style="color:var(--ypg-blue); text-decoration:underline; font-weight:600;">Terms of Service &nearr;</a>`;
       }
       container.innerHTML = html;
       container.style.display = html ? 'flex' : 'none';
@@ -5846,7 +5863,7 @@
         if (b.hidePoweredBy) {
           legalDisclaimerEl.innerHTML = `Secured by 256-Bit Bank Encryption &bull; <span style="text-decoration:underline; cursor:pointer;" onclick="openHelpModal()">Privacy &amp; Terms</span>`;
         } else {
-          legalDisclaimerEl.innerHTML = `Secured by ${appName} &amp; 256-Bit Bank Encryption &bull; <span style="text-decoration:underline; cursor:pointer;" onclick="openHelpModal()">Privacy Notice</span>`;
+          legalDisclaimerEl.innerHTML = `Secured by ${escapeHtml(appName)} &amp; 256-Bit Bank Encryption &bull; <span style="text-decoration:underline; cursor:pointer;" onclick="openHelpModal()">Privacy Notice</span>`;
         }
       }
 
@@ -6260,8 +6277,8 @@
       const initialTimerStr = formatTime(timeSec);
 
       const actionText = sellingMode === 'ONLINE'
-        ? `Skip the UPI wait! Pay with <strong>${altMethodName}</strong> instantly without waiting for a UPI slot.`
-        : `Don't wait in the UPI line! Pay with <strong>${altMethodName}</strong> right now to complete your purchase instantly.`;
+        ? `Skip the UPI wait! Pay with <strong>${escapeHtml(altMethodName)}</strong> instantly without waiting for a UPI slot.`
+        : `Don't wait in the UPI line! Pay with <strong>${escapeHtml(altMethodName)}</strong> right now to complete your purchase instantly.`;
 
       qBanner.innerHTML = `
         <div class="ypg-queue-conversion-card">
@@ -6272,8 +6289,8 @@
           <div class="ypg-queue-conversion-text">
             ${actionText}
           </div>
-          <button type="button" class="ypg-btn-queue-switch" onclick="selectPaymentMethod('${altMethodCode}')">
-            <span>Pay with ${altMethodName}</span>
+          <button type="button" class="ypg-btn-queue-switch" onclick="selectPaymentMethod(${jsAttr(altMethodCode)})">
+            <span>Pay with ${escapeHtml(altMethodName)}</span>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
           </button>
         </div>
@@ -6752,10 +6769,10 @@
       const caseBox = document.getElementById('helpModalCaseInfoText');
 
       if (emailBox && info.supportEmails) {
-        emailBox.innerHTML = `<strong>Email:</strong> ${info.supportEmails.join(', ')}`;
+        emailBox.innerHTML = `<strong>Email:</strong> ${escapeHtml(info.supportEmails.join(', '))}`;
       }
       if (phoneBox && info.supportMobiles) {
-        phoneBox.innerHTML = `<strong>Phone:</strong> ${info.supportMobiles.join(', ')}`;
+        phoneBox.innerHTML = `<strong>Phone:</strong> ${escapeHtml(info.supportMobiles.join(', '))}`;
       }
       if (caseBox) {
         caseBox.textContent = `PAYMENT_ID: ${PAYMENT_ID}\nORDER_ID: ${state?.orderId || 'N/A'}\nAMOUNT: ₹${state?.amount || 'N/A'}\nSTATUS: ${state?.status || 'N/A'}`;

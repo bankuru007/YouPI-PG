@@ -49,23 +49,41 @@ apps/android-observer-app/
 
 ## 3. How to Build the APK
 
-### Prerequisites
-- JDK 17+ (e.g. OpenJDK 17)
-- Android SDK (API Level 34)
+The repository does **not** ship a prebuilt APK. A committed binary cannot be checked against
+the source, and this app reads every SMS on the phone, so build it yourself.
 
-### Building via Gradle CLI
-From the `apps/android-observer-app` directory:
+### Option A: build locally (recommended)
+
+Prerequisites:
+- JDK 17 (`JAVA_HOME` set)
+- Android SDK with `build-tools;34.0.0` and `platforms;android-34` (`ANDROID_HOME` set)
 
 ```bash
-# Debug Build (for testing & development):
-./gradlew assembleDebug
-
-# Output APK located at:
-# app/build/outputs/apk/debug/app-debug.apk
-
-# Production Release Build:
-./gradlew assembleRelease
+node scripts/build-android-apk.js
 ```
+
+The script downloads ZXing core from Maven Central and checks it against Maven's published
+checksum, compiles the Java sources, and signs the APK with a keystore it creates once at
+`data/android-release.keystore` (keep this file private and backed up; updates must use the same key).
+
+Output: `apps/android-observer-app/app/build/outputs/apk/release/youpi-sms-gateway.apk`
+(plus a `.sha256` file). The Payment API serves this file at `/youpi-sms-gateway.apk`.
+
+### Option B: GitHub Actions
+
+Run the **Android APK** workflow (`.github/workflows/android-apk.yml`) and download the artifact.
+To keep one signing key across builds, add `ANDROID_KEYSTORE_BASE64` and
+`ANDROID_KEYSTORE_PASSWORD` repository secrets.
+
+### Network security
+
+The app only talks to the server over HTTPS (system-trusted certificates only). Plain HTTP is
+allowed for `10.0.2.2`, `localhost` and `127.0.0.1` during local development. In production,
+expose the Payment API through Cloudflare Tunnel or another HTTPS endpoint.
+
+The notification listener only accepts notifications from known UPI and bank apps (PhonePe,
+Google Pay, Paytm, BHIM, CRED and several bank apps). Messages arriving through WhatsApp or other
+chat apps are ignored, so a customer cannot fake a payment by messaging the merchant's phone.
 
 ---
 
@@ -75,9 +93,9 @@ From the `apps/android-observer-app` directory:
 Connect your Android phone via USB with USB Debugging enabled:
 
 ```bash
-adb install -r app/build/outputs/apk/debug/app-debug.apk
+adb install -r app/build/outputs/apk/release/youpi-sms-gateway.apk
 ```
-*(Or transfer `app-debug.apk` directly to your phone via USB/WhatsApp/Drive and install).*
+*(Or copy `youpi-sms-gateway.apk` to the phone and install it.)*
 
 ### Step 2: Grant Notification Listener Permission
 1. Open the app **YOUPI Observer**.

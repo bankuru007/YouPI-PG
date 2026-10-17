@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
+import { buildCloudflaredInvocation } from '@youpi/common';
 
 /**
  * Cloudflare Tunnel Process Manager
@@ -49,20 +50,19 @@ export class TunnelManager extends EventEmitter {
       this.stop();
     }
 
-    const trimmed = rawCommand.trim();
-    this.command = trimmed;
+    // SECURITY: never hand user input to a shell. Only a validated cloudflared token is accepted,
+    // and cloudflared is launched directly with a fixed argument list.
+    const invocation = buildCloudflaredInvocation(rawCommand);
+    this.command = invocation.display;
     this.status = 'STARTING';
     this.startedAt = new Date().toISOString();
-    this.appendLog(`[TunnelManager] Launching tunnel command: ${trimmed}`);
+    this.appendLog(`[TunnelManager] Launching tunnel: ${invocation.display}`);
 
     try {
-      // Execute via shell (cmd.exe on Windows / sh on Unix) so tokens, flags, and paths execute cleanly
-      const isWindows = process.platform === 'win32';
-      const shell = isWindows ? (process.env.ComSpec || 'cmd.exe') : '/bin/sh';
-      const shellArgs = isWindows ? ['/c', trimmed] : ['-c', trimmed];
-
-      const child = spawn(shell, shellArgs, {
+      const child = spawn(invocation.executable, invocation.args, {
         detached: false,
+        shell: false,
+        windowsHide: true,
         stdio: ['ignore', 'pipe', 'pipe'],
         env: { ...process.env }
       });

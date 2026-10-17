@@ -1,4 +1,6 @@
 import { HttpServer } from '../server.js';
+import { isAdminRequest } from '../security/access-guard.js';
+import { safeEqual } from '@youpi/common';
 import { generateFingerprintHash, normalizeDeviceSignals, verifyDeviceSignature } from '@youpi/core';
 
 /**
@@ -34,8 +36,9 @@ export function registerDeviceRoutes(server, ctx) {
     const fingerprintHash = body.fingerprintHash || generateFingerprintHash(clientSignals);
     const normalized = normalizeDeviceSignals(clientSignals);
 
-    // Optional customer association from body or authorization token
-    let customerId = body.customerId || null;
+    // Optional customer association. SECURITY: a raw customerId is only accepted from an admin;
+    // customers are associated through their own session token.
+    let customerId = isAdminRequest(req) ? (body.customerId || null) : null;
     if (!customerId) {
       const authHeader = req.headers['authorization'] || '';
       if (authHeader.startsWith('Bearer ') && ctx.customerSessionRepo) {
@@ -58,7 +61,8 @@ export function registerDeviceRoutes(server, ctx) {
       HttpServer.json(res, 200, {
         success: true,
         deviceId: existing.id,
-        deviceToken: existing.deviceToken,
+        // The device token is only issued once, at first registration.
+        deviceToken: null,
         fingerprintHash: existing.fingerprintHash,
         status: existing.status,
         isExisting: true
@@ -120,9 +124,15 @@ export function registerDeviceRoutes(server, ctx) {
       return;
     }
 
+    // SECURITY: at least one credential is required; a bare deviceId proves nothing.
+    if (!deviceToken && !(signature && payload)) {
+      HttpServer.json(res, 401, { valid: false, error: 'deviceToken or signature is required' });
+      return;
+    }
+
     let tokenValid = true;
-    if (deviceToken && device.deviceToken !== deviceToken) {
-      tokenValid = false;
+    if (deviceToken) {
+      tokenValid = typeof deviceToken === 'string' && typeof device.deviceToken === 'string' && safeEqual(deviceToken, device.deviceToken);
     }
 
     let signatureValid = true;
@@ -135,7 +145,7 @@ export function registerDeviceRoutes(server, ctx) {
     HttpServer.json(res, isValid ? 200 : 401, {
       valid: isValid,
       deviceId: device.id,
-      customerId: device.customerId,
+      customerId: isValid ? device.customerId : undefined,
       tokenValid,
       signatureValid
     });

@@ -1,3 +1,4 @@
+import { observerAuthHeaders } from '@youpi/common';
 import { PaymentObserverClient } from '@youpi/observer-sdk';
 import { BankSmsParser } from './sms-parser.js';
 
@@ -26,7 +27,7 @@ export class SmsObserverService {
 
   async resolveActiveReceivingAccount() {
     try {
-      const res = await fetch(`${this.apiBaseUrl}/api/v1/pollers/active-window`, { signal: AbortSignal.timeout(1000) });
+      const res = await fetch(`${this.apiBaseUrl}/api/v1/pollers/active-window`, { signal: AbortSignal.timeout(1000), headers: observerAuthHeaders() });
       if (res.ok) {
         const data = await res.json();
         if (data.sessions && data.sessions.length > 0) {

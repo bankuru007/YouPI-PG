@@ -67,6 +67,7 @@ export function generateHmac(data: string, secret: string): string {
  * Timing-safe HMAC signature verification.
  */
 export function verifyHmac(data: string, secret: string, expectedSignature: string): boolean {
+  if (typeof expectedSignature !== 'string' || !/^[0-9a-f]{64}$/i.test(expectedSignature)) return false;
   const actualSignature = generateHmac(data, secret);
   const actualBuffer = Buffer.from(actualSignature, 'hex');
   const expectedBuffer = Buffer.from(expectedSignature, 'hex');
@@ -91,7 +92,7 @@ export function generateRandomToken(bytes: number = 32): string {
  */
 export function hashPassword(password: string): string {
   const salt = crypto.randomBytes(16).toString('hex');
-  const iterations = 100000;
+  const iterations = 210000; // OWASP 2023 guidance for PBKDF2-HMAC-SHA512
   const hash = crypto.pbkdf2Sync(password, salt, iterations, 64, 'sha512').toString('hex');
   return `${iterations}:${salt}:${hash}`;
 }
@@ -100,13 +101,18 @@ export function hashPassword(password: string): string {
  * Verifies a password against a stored PBKDF2 hash.
  */
 export function verifyPassword(password: string, storedHash: string): boolean {
+  if (typeof password !== 'string' || typeof storedHash !== 'string') return false;
   const parts = storedHash.split(':');
   if (parts.length !== 3) return false;
 
   const iterations = parseInt(parts[0]!, 10);
   const salt = parts[1]!;
   const originalHash = parts[2]!;
+  if (!Number.isInteger(iterations) || iterations < 1 || iterations > 10_000_000) return false;
+  if (!/^[0-9a-f]+$/i.test(originalHash) || originalHash.length !== 128) return false;
 
-  const checkHash = crypto.pbkdf2Sync(password, salt, iterations, 64, 'sha512').toString('hex');
-  return crypto.timingSafeEqual(Buffer.from(checkHash, 'hex'), Buffer.from(originalHash, 'hex'));
+  const checkHash = crypto.pbkdf2Sync(password, salt, iterations, 64, 'sha512');
+  const expected = Buffer.from(originalHash, 'hex');
+  if (checkHash.length !== expected.length) return false;
+  return crypto.timingSafeEqual(checkHash, expected);
 }

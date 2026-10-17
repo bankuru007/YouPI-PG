@@ -10,7 +10,9 @@ export function startSmsObserver(port = null, options = {}) {
   const rawServer = observerServer.createServer();
 
   return new Promise(resolve => {
-    const instance = rawServer.listen(finalPort, () => {
+    // Internal service: loopback only by default (override with SMS_OBSERVER_HOST).
+    const host = process.env.SMS_OBSERVER_HOST || '127.0.0.1';
+    const instance = rawServer.listen(finalPort, host, () => {
       console.log(`[SMS Observer] Service listening on port ${finalPort}`);
       resolve({
         service,

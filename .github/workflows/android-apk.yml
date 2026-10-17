@@ -1,0 +1,55 @@
+# Builds the YOUPI SMS Gateway APK from source so the binary is traceable to a commit.
+# Download the result from the workflow run's "Artifacts" section.
+name: Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'apps/android-observer-app/**'
+      - 'scripts/build-android-apk.js'
+      - '.github/workflows/android-apk.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android build tools
+        run: sdkmanager "build-tools;34.0.0" "platforms;android-34"
+
+      - name: Build APK
+        env:
+          # Store a real keystore as a base64 secret to keep the same signing key across builds.
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
+            mkdir -p data
+            echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > data/android-release.keystore
+          else
+            unset ANDROID_KEYSTORE_PASSWORD
+          fi
+          node scripts/build-android-apk.js
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: youpi-sms-gateway-apk
+          path: |
+            apps/android-observer-app/app/build/outputs/apk/release/youpi-sms-gateway.apk
+            apps/android-observer-app/app/build/outputs/apk/release/youpi-sms-gateway.apk.sha256

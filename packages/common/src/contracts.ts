@@ -166,7 +166,7 @@ export function isValidMobile(mobile: string | null | undefined): boolean {
  * Validates password strength (minimum 6 characters).
  */
 export function isValidPassword(password: string | null | undefined): boolean {
-  return typeof password === 'string' && password.length >= 6;
+  return typeof password === 'string' && password.length >= 8 && password.length <= 128;
 }
 
 export interface SupportTicketSummary {

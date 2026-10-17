@@ -10,7 +10,10 @@ export function startControlCenter(port = null, options = {}) {
   const rawServer = server.createServer();
 
   return new Promise(resolve => {
-    const instance = rawServer.listen(finalPort, () => {
+    // SECURITY: the supervisor can start/stop every service and has no login of its own,
+    // so it only listens on loopback. The authenticated merchant admin panel proxies to it.
+    const host = process.env.CONTROL_CENTER_HOST || '127.0.0.1';
+    const instance = rawServer.listen(finalPort, host, () => {
       console.log(`[Control Center] Supervisor listening on http://localhost:${finalPort}`);
       resolve({
         server,
