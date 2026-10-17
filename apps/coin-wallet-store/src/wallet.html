@@ -254,6 +254,15 @@
 <script src="/youpi.js"></script>
 
 <script>
+  function escapeHtml(text) {
+    if (text === null || text === undefined) return '';
+    return String(text).replace(/[&<>"'`]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;', '`': '&#96;' })[c]);
+  }
+
+  function jsAttr(value) {
+    return escapeHtml(JSON.stringify(value === null || value === undefined ? '' : String(value)));
+  }
+
   const urlParams = new URLSearchParams(window.location.search);
   const orderIdParam = urlParams.get('orderId');
 
@@ -280,10 +289,10 @@
       if (data.history && data.history.length > 0) {
         tbody.innerHTML = data.history.map(item => `
           <tr>
-            <td><strong style="color:#ffffff;">#${item.orderId}</strong></td>
-            <td>${item.packName || 'Coin Pack'}</td>
+            <td><strong style="color:#ffffff;">#${escapeHtml(item.orderId)}</strong></td>
+            <td>${escapeHtml(item.packName || 'Coin Pack')}</td>
             <td><strong style="color:#f59e0b;">+${Number(item.coins).toLocaleString()} Coins</strong></td>
-            <td><span class="badge-credited">${item.status}</span></td>
+            <td><span class="badge-credited">${escapeHtml(item.status)}</span></td>
             <td>${new Date(item.timestamp).toLocaleString()}</td>
           </tr>
         `).join('');

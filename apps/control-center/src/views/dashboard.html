@@ -154,17 +154,17 @@
 
         return `
           <tr>
-            <td><strong>${s.name}</strong><br/><span style="font-size:0.75rem;color:var(--text-muted);">${s.id}</span></td>
-            <td><code>${s.port}</code></td>
-            <td><code>${s.pid || '-'}</code></td>
-            <td><span class="badge ${badgeClass}">${s.status}</span></td>
+            <td><strong>${escapeHtml(s.name)}</strong><br/><span style="font-size:0.75rem;color:var(--text-muted);">${escapeHtml(s.id)}</span></td>
+            <td><code>${escapeHtml(s.port)}</code></td>
+            <td><code>${escapeHtml(s.pid || '-')}</code></td>
+            <td><span class="badge ${badgeClass}">${escapeHtml(s.status)}</span></td>
             <td>${s.uptimeSeconds ? s.uptimeSeconds + 's' : '-'}</td>
             <td>
               ${isRunning ? `
-                <button class="btn btn-secondary" style="padding:0.25rem 0.5rem; font-size:0.75rem;" onclick="restartService('${s.id}')">Restart</button>
-                <button class="btn btn-danger" style="padding:0.25rem 0.5rem; font-size:0.75rem;" onclick="stopService('${s.id}')">Stop</button>
+                <button class="btn btn-secondary" style="padding:0.25rem 0.5rem; font-size:0.75rem;" onclick="restartService(${jsAttr(s.id)})">Restart</button>
+                <button class="btn btn-danger" style="padding:0.25rem 0.5rem; font-size:0.75rem;" onclick="stopService(${jsAttr(s.id)})">Stop</button>
               ` : `
-                <button class="btn btn-success" style="padding:0.25rem 0.5rem; font-size:0.75rem;" onclick="startService('${s.id}')">Start</button>
+                <button class="btn btn-success" style="padding:0.25rem 0.5rem; font-size:0.75rem;" onclick="startService(${jsAttr(s.id)})">Start</button>
               `}
             </td>
           </tr>
@@ -230,14 +230,19 @@
     div.className = `log-line ${log.stream === 'stderr' ? 'log-stderr' : (log.stream === 'system' ? 'log-system' : '')}`;
 
     const time = new Date(log.timestamp).toLocaleTimeString();
-    div.innerHTML = `<span class="log-ts">[${time}]</span><span class="log-svc">[${log.serviceId}]</span> ${escapeHtml(log.line)}`;
+    div.innerHTML = `<span class="log-ts">[${time}]</span><span class="log-svc">[${escapeHtml(log.serviceId)}]</span> ${escapeHtml(log.line)}`;
 
     term.appendChild(div);
     term.scrollTop = term.scrollHeight;
   }
 
   function escapeHtml(text) {
-    return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    if (text === null || text === undefined) return '';
+    return String(text).replace(/[&<>"'`]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;', '`': '&#96;' })[c]);
+  }
+
+  function jsAttr(value) {
+    return escapeHtml(JSON.stringify(value === null || value === undefined ? '' : String(value)));
   }
 
   // Init

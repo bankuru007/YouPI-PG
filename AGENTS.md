@@ -177,7 +177,12 @@ app.post('/api/webhook', express.raw({ type: 'application/json' }), (req, res) =
 
   const payload = JSON.parse(req.body.toString('utf8'));
   if (payload.event === 'SUCCESS') {
-    // Authoritatively mark order as PAID in merchant database
+    // Anyone can create a payment on the public API, so confirm the order is yours,
+    // the amount matches, and the method is a real prepaid payment before fulfilling.
+    const order = db.orders.findById(payload.orderId);
+    if (!order || BigInt(order.amountPaise) !== BigInt(payload.amountPaise) || payload.method !== 'UPI') {
+      return res.status(200).json({ received: true, ignored: true });
+    }
     db.orders.markPaid(payload.orderId, {
       utr: payload.utr,
       amount: payload.amount,
@@ -299,7 +304,13 @@ func youpiWebhookHandler(w http.ResponseWriter, r *http.Request) {
    - `webhookSecret`, database credentials, and observer tokens must remain strictly on the backend.
 3. **Idempotency & Deduplication**:
    - Webhook deliveries include unique `X-Gateway-Delivery-Id` and `orderId`. Merchants must ensure their webhook processing is idempotent.
-4. **Preserve Customer Metadata**:
+4. **Verify Order Ownership, Amount and Method**:
+   - The public payment API accepts any `orderId`, amount and metadata, so a signed webhook only proves the gateway saw *a* payment.
+   - Look up `orderId` in your own database, compare `amountPaise` to the amount you expect, and treat `COD`, `CASH_COUNTER` and `CARD_COUNTER` as unpaid until collected.
+   - Never trust coin counts, prices or product IDs taken from webhook `metadata` without matching them to your own order record.
+5. **Server Credentials**:
+   - Admin, observer and pairing secrets are required; see `docs/SECURITY_SETUP.md`.
+6. **Preserve Customer Metadata**:
    - Unrecognized fields in `metadata` are passed through untouched and included in webhooks and API responses.
 
 ---

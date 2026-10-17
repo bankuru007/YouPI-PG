@@ -148,3 +148,109 @@ export function observerAuthHeaders() {
   const token = (process.env.OBSERVER_INGEST_TOKEN || '').trim();
   return token ? { 'X-Observer-Token': token } : {};
 }
+
+/**
+ * Token the checkout portal uses for server-side state fetches. Derived from ADMIN_API_TOKEN,
+ * so no extra secret is needed; returns null when the admin token is not configured.
+ * @returns {string|null}
+ */
+export function internalRenderToken() {
+  const admin = getStrongSecret('ADMIN_API_TOKEN');
+  if (!admin) return null;
+  return crypto.createHmac('sha256', admin).update('youpi-internal-render-v1').digest('hex');
+}
+
+/**
+ * Client IP for rate limiting and logging.
+ * When the TCP peer is loopback the request came through a local proxy (cloudflared or one of
+ * our own proxies), so CF-Connecting-IP / X-Forwarded-For identify the client. For any other
+ * peer those headers are trusted only when TRUST_PROXY=1.
+ * @param {import('node:http').IncomingMessage} req
+ */
+export function clientIpFromRequest(req) {
+  const peer = req.socket?.remoteAddress || 'unknown';
+  const isLoopback = peer === '127.0.0.1' || peer === '::1' || peer === '::ffff:127.0.0.1';
+  if (isLoopback || process.env.TRUST_PROXY === '1') {
+    const cf = req.headers['cf-connecting-ip'];
+    if (typeof cf === 'string' && cf.trim()) return cf.trim();
+    const xff = req.headers['x-forwarded-for'];
+    if (typeof xff === 'string' && xff.trim()) return xff.split(',')[0].trim();
+  }
+  return peer;
+}
+
+/**
+ * Headers an internal proxy should send upstream so the API sees the real client address
+ * and cannot be fooled by client-supplied forwarding headers.
+ * @param {import('node:http').IncomingMessage} req
+ */
+export function proxyForwardingHeaders(req) {
+  return { 'x-forwarded-for': clientIpFromRequest(req), 'cf-connecting-ip': clientIpFromRequest(req) };
+}
+
+/**
+ * True when a request to an internal service (Gmail / SMS observer) carries the observer or
+ * admin token. Used to lock down everything except health checks and the OAuth callback.
+ * @param {import('node:http').IncomingMessage} req
+ */
+export function isTrustedServiceRequest(req) {
+  const observer = getStrongSecret('OBSERVER_INGEST_TOKEN');
+  const admin = getStrongSecret('ADMIN_API_TOKEN');
+  const suppliedObserver = String(req.headers['x-observer-token'] || '');
+  const suppliedAdmin = String(req.headers['x-admin-token'] || '');
+  return Boolean(
+    (observer && suppliedObserver && safeEqual(suppliedObserver, observer)) ||
+    (admin && suppliedAdmin && safeEqual(suppliedAdmin, admin))
+  );
+}
+
+const OAUTH_STATE_TTL_MS = 15 * 60 * 1000;
+
+/**
+ * Signed, expiring OAuth `state` value (CSRF protection for the Gmail OAuth flow).
+ * Both the Payment API and the Gmail observer can create/verify it using ADMIN_API_TOKEN.
+ * @returns {string|null}
+ */
+export function createOAuthState() {
+  const key = getStrongSecret('ADMIN_API_TOKEN');
+  if (!key) return null;
+  const payload = Buffer.from(JSON.stringify({
+    n: crypto.randomBytes(16).toString('hex'),
+    exp: Date.now() + OAUTH_STATE_TTL_MS
+  })).toString('base64url');
+  const sig = crypto.createHmac('sha256', key).update(`oauth-state:${payload}`).digest('base64url');
+  return `${payload}.${sig}`;
+}
+
+/**
+ * @param {string|null|undefined} state
+ * @returns {boolean}
+ */
+export function verifyOAuthState(state) {
+  const key = getStrongSecret('ADMIN_API_TOKEN');
+  if (!key || typeof state !== 'string' || state.length > 512) return false;
+  const [payload, sig] = state.split('.');
+  if (!payload || !sig) return false;
+  const expected = crypto.createHmac('sha256', key).update(`oauth-state:${payload}`).digest('base64url');
+  if (!safeEqual(sig, expected)) return false;
+  try {
+    const data = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    return typeof data.exp === 'number' && data.exp > Date.now();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Minimal HTML escaping for server-rendered strings.
+ * @param {unknown} value
+ */
+export function escapeHtmlText(value) {
+  if (value === null || value === undefined) return '';
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}

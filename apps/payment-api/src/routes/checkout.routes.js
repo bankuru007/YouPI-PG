@@ -1,5 +1,6 @@
 import { HttpServer } from '../server.js';
-import { toRupeesString, buildUpiUri, PaymentStatus, PaymentMethod, UPI_PROVIDERS } from '@youpi/common';
+import { isAdminRequest, resolveActingCustomer, isInternalRenderRequest } from '../security/access-guard.js';
+import { toRupeesString, buildUpiUri, PaymentStatus, PaymentMethod, UPI_PROVIDERS, observerAuthHeaders } from '@youpi/common';
 import { validateSessionDeviceAccess } from '@youpi/core';
 
 /**
@@ -14,8 +15,8 @@ function checkSessionDeviceAccess(session, req, body = null, ctx = null) {
     return { allowed: true, boundDeviceId: session.deviceId, isTerminal: true };
   }
 
-  // Internal server-side HTML render calls bypass device blocking
-  if (req.headers['x-internal-render'] === 'true') {
+  // Internal server-side HTML render calls bypass device blocking (requires the derived internal token)
+  if (isInternalRenderRequest(req)) {
     return { allowed: true, boundDeviceId: session.deviceId };
   }
 
@@ -177,7 +178,7 @@ async function checkUpiServerHealth(ctx, enabledMethods = [], sellingMode = 'OFF
   if (!smsHealthy) {
     try {
       const smsPort = Number(process.env.SMS_OBSERVER_PORT || 6002);
-      const res = await fetch(`http://127.0.0.1:${smsPort}/api/browser/status`, { signal: AbortSignal.timeout(800) });
+      const res = await fetch(`http://127.0.0.1:${smsPort}/api/browser/status`, { headers: observerAuthHeaders(), signal: AbortSignal.timeout(800) });
       if (res.ok) {
         const data = await res.json();
         const isRecent = data.lastSeenAt && (Date.now() - new Date(data.lastSeenAt).getTime() < 300000);
@@ -212,7 +213,7 @@ async function checkUpiServerHealth(ctx, enabledMethods = [], sellingMode = 'OFF
 
       if (!pollerActive) {
         try {
-          const res = await fetch(`http://127.0.0.1:${gmailPort}/api/browser/status`, { signal: AbortSignal.timeout(800) });
+          const res = await fetch(`http://127.0.0.1:${gmailPort}/api/browser/status`, { headers: observerAuthHeaders(), signal: AbortSignal.timeout(800) });
           if (res.ok) {
             const data = await res.json();
             if (data.isLoggedIn || data.status === 'CONNECTED' || data.isPolling) {
@@ -244,7 +245,7 @@ async function checkUpiServerHealth(ctx, enabledMethods = [], sellingMode = 'OFF
       // Check if browser-based Gmail automator is actively logged in
       try {
         const gmailPort = Number(process.env.GMAIL_OBSERVER_PORT || 6003);
-        const res = await fetch(`http://127.0.0.1:${gmailPort}/api/browser/status`, { signal: AbortSignal.timeout(800) });
+        const res = await fetch(`http://127.0.0.1:${gmailPort}/api/browser/status`, { headers: observerAuthHeaders(), signal: AbortSignal.timeout(800) });
         if (res.ok) {
           const data = await res.json();
           if (data.isLoggedIn === true && data.status === 'CONNECTED') {
@@ -629,6 +630,11 @@ export function registerCheckoutRoutes(server, ctx) {
       }
       customer = authContext.customer;
     } else if (customerId && ctx.customerRepo) {
+      // SECURITY: binding by raw customerId is an operator action; customers must use their session token.
+      if (!isAdminRequest(req)) {
+        HttpServer.json(res, 401, { error: 'A valid customer session token is required.' });
+        return;
+      }
       customer = ctx.customerRepo.findById(customerId);
     }
 
@@ -1495,7 +1501,13 @@ export function registerCheckoutRoutes(server, ctx) {
     }
 
     const sourceSession = (conflictingSessionId ? ctx.sessionRepo.findById(conflictingSessionId) : null) || targetSession;
-    const customerId = body?.customerId || sourceSession?.customerId || targetSession.customerId || null;
+    // SECURITY: a caller may only name a customerId they are authenticated as (or an admin).
+    const acting = resolveActingCustomer(req, body || {}, ctx);
+    if (acting.rejected) {
+      HttpServer.json(res, 403, { error: 'You are not allowed to act for this customer.' });
+      return;
+    }
+    const customerId = acting.customer?.id || sourceSession?.customerId || targetSession.customerId || null;
 
     // 1. Identify ALL sessions on old/other devices that must be cancelled
     const sessionsToTerminate = new Map();

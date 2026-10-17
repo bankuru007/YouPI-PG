@@ -7,6 +7,9 @@ import { MerchantRepository } from './repositories/merchant.repository.js';
 import { ReceivingAccountRepository } from './repositories/receiving-account.repository.js';
 import { CustomerRepository } from './repositories/customer.repository.js';
 
+// Webhook secret that older versions seeded and that is published in this repository.
+const LEGACY_PUBLIC_WEBHOOK_SECRET = 'merchant_webhook_secret_for_wallet_store';
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -117,7 +120,8 @@ export function runMigrations(targetDb) {
       contactEmail: 'merchant@youpi.local',
       contactPhone: '9876543210',
       webhookUrl: process.env.COIN_STORE_WEBHOOK_URL || 'http://localhost:5000/api/webhook',
-      webhookSecret: process.env.COIN_STORE_WEBHOOK_SECRET || 'merchant_webhook_secret_for_wallet_store',
+      // SECURITY: never seed a publicly known webhook secret.
+      webhookSecret: process.env.COIN_STORE_WEBHOOK_SECRET || crypto.randomBytes(32).toString('hex'),
       branding: {
         appName: 'YOUPI PG',
         primaryColor: '#2563eb',
@@ -128,9 +132,18 @@ export function runMigrations(targetDb) {
     defaultMerchant = existing[0];
     if (!defaultMerchant.webhookSecret) {
       merchantRepo.update(defaultMerchant.id, {
-        webhookUrl: 'http://localhost:5000/api/webhook',
-        webhookSecret: 'merchant_webhook_secret_for_wallet_store'
+        webhookUrl: defaultMerchant.webhookUrl || 'http://localhost:5000/api/webhook',
+        webhookSecret: process.env.COIN_STORE_WEBHOOK_SECRET || crypto.randomBytes(32).toString('hex')
       });
+      defaultMerchant = merchantRepo.findById(defaultMerchant.id) || defaultMerchant;
+    } else if (defaultMerchant.webhookSecret === LEGACY_PUBLIC_WEBHOOK_SECRET) {
+      // Older versions seeded a secret that is published in this repository, which lets anyone
+      // forge "payment SUCCESS" webhooks. Rotate it.
+      merchantRepo.update(defaultMerchant.id, {
+        webhookSecret: process.env.COIN_STORE_WEBHOOK_SECRET || crypto.randomBytes(32).toString('hex')
+      });
+      defaultMerchant = merchantRepo.findById(defaultMerchant.id) || defaultMerchant;
+      console.warn('[Migrations] Rotated the default merchant webhook secret (it was a public example value). Copy the new secret from the merchant admin panel into your webhook receiver.');
     }
   }
 
@@ -147,17 +160,18 @@ export function runMigrations(targetDb) {
     });
   }
 
-  // Seed default customer if none exists
+  // Seed a placeholder demo customer outside production (no real person's details).
   const customerRepo = new CustomerRepository(db);
-  const existingCust = customerRepo.findByMobile('9212339720');
-  if (!existingCust) {
-    customerRepo.create({
-      id: '00000000-0000-0000-0000-000000000002',
-      name: 'Gaurav Mehra',
-      email: 'gauravmehra09876@gmail.com',
-      mobileNumber: '9212339720',
-      isPhoneVerified: true
-    });
+  if (process.env.NODE_ENV !== 'production' && !customerRepo.findById('00000000-0000-0000-0000-000000000002')) {
+    try {
+      customerRepo.create({
+        id: '00000000-0000-0000-0000-000000000002',
+        name: 'Demo Customer',
+        email: 'demo.customer@youpi.local',
+        mobileNumber: '9000000001',
+        isPhoneVerified: true
+      });
+    } catch {}
   }
 
   return {

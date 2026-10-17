@@ -198,7 +198,11 @@ npm install
 ```bash
 cp .env.example .env
 ```
-*(The default `.env` is pre-configured for localhost out of the box).*
+Then set the required secrets (admin, observer and pairing tokens, plus the admin panel login).
+The protected features stay off until you do. See [`docs/SECURITY_SETUP.md`](docs/SECURITY_SETUP.md).
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```
 
 ### 3. Zero-Config Launch (Auto-Initialized SQLite)
 On first launch, YOUPI PG automatically provisions `data/youpi_pg.sqlite`, creates the directory if missing, and executes idempotent migrations and baseline seeds. No manual database setup is required:
@@ -459,7 +463,7 @@ YOUPI PG confirms payments without expensive commercial banking APIs using a tri
                        SUCCESS CONFIRMED
 ```
 
-1. **Android Observer App:** Install [`apps/android-observer-app/youpi-sms-gateway.apk`](apps/android-observer-app/youpi-sms-gateway.apk) on any secondary Android smartphone with the receiving bank SIM. Scan the pairing QR code in Merchant Admin to establish an encrypted HMAC link.
+1. **Android Observer App:** Build the APK from source with `node scripts/build-android-apk.js` (see [`docs/ANDROID_MOBILE_APP.md`](docs/ANDROID_MOBILE_APP.md)) and install it on a secondary Android smartphone with the receiving bank SIM. Scan the pairing QR code in Merchant Admin to establish an encrypted HMAC link.
 2. **Gmail Observer:** Connect your bank-registered Google account using standard OAuth2 credentials.
 3. **Google Messages Web Observer:** Pairs via headless Chrome DevTools Protocol to observe cellular SMS through Google Messages Web.
 

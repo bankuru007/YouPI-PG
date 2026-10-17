@@ -102,45 +102,43 @@ describe('Coin Top-Up Wallet Demo Store Integration Tests', () => {
     assert.ok(checkoutRes.body.checkoutUrl.includes('/checkout/'));
   });
 
-  test('POST /api/webhook processes signed SUCCESS event and credits wallet coins', async () => {
+  test('POST /api/webhook credits coins only for orders this store created', async () => {
     const initialCoins = storeInstance.server.walletCoins;
 
-    const payloadObj = {
-      event: 'SUCCESS',
-      paymentId: 'pay_coin_test_123',
-      orderId: 'COIN-ORD-555',
-      amount: '449.00',
-      amountPaise: 44900,
-      currency: 'INR',
-      method: 'UPI',
-      metadata: {
-        coins: 550,
-        packName: 'Gamer Pack'
-      }
+    const checkoutRes = await request('/api/checkout', { method: 'POST', body: { price: 449, coins: 999999 } });
+    assert.equal(checkoutRes.status, 200);
+    const orderId = checkoutRes.body.orderId;
+
+    const send = async (payloadObj) => {
+      const payloadString = JSON.stringify(payloadObj);
+      const signature = generateHmac(payloadString, storeSecret);
+      return request('/api/webhook', {
+        method: 'POST',
+        headers: { 'X-Gateway-Signature': `sha256=${signature}` },
+        body: payloadString
+      });
     };
 
-    const payloadString = JSON.stringify(payloadObj);
-    const signature = generateHmac(payloadString, storeSecret);
+    // Signed event for an order the store never created (e.g. made directly on the gateway).
+    const foreign = await send({ event: 'SUCCESS', orderId: 'COIN-ORD-FOREIGN', amount: '1.00', amountPaise: 100, metadata: { coins: 1000000 } });
+    assert.equal(foreign.status, 200);
+    assert.equal(foreign.body.credited, false);
+    assert.equal(storeInstance.server.walletCoins, initialCoins);
 
-    const hookRes = await request('/api/webhook', {
-      method: 'POST',
-      headers: {
-        'X-Gateway-Signature': `sha256=${signature}`
-      },
-      body: payloadString
-    });
+    // Wrong amount for a real order.
+    const underpaid = await send({ event: 'SUCCESS', orderId, amount: '1.00', amountPaise: 100, metadata: { coins: 1000000 } });
+    assert.equal(underpaid.body.credited, false);
+    assert.equal(storeInstance.server.walletCoins, initialCoins);
 
+    // Correct order and amount: credits the server-decided coins, ignoring payload metadata.
+    const hookRes = await send({ event: 'SUCCESS', paymentId: 'pay_coin_test_123', orderId, amount: '449.00', amountPaise: 44900, currency: 'INR', method: 'UPI', metadata: { coins: 1000000 } });
     assert.equal(hookRes.status, 200);
     assert.equal(hookRes.body.credited, true);
+    assert.equal(storeInstance.server.walletCoins, initialCoins + 449);
 
-    // Verify coins were credited to wallet!
-    assert.equal(storeInstance.server.walletCoins, initialCoins + 550);
-
-    // Verify recorded in ledger
     const balanceRes = await request('/api/wallet-balance');
-    assert.equal(balanceRes.body.coins, initialCoins + 550);
-    assert.ok(balanceRes.body.history.length >= 1);
-    assert.equal(balanceRes.body.history[0].orderId, 'COIN-ORD-555');
+    assert.equal(balanceRes.body.coins, initialCoins + 449);
+    assert.equal(balanceRes.body.history[0].orderId, orderId);
   });
 
   test('POST /api/webhook rejects fraudulent signature', async () => {
@@ -263,7 +261,7 @@ describe('Coin Top-Up Wallet Demo Store Integration Tests', () => {
     });
 
     assert.equal(checkoutRes.status, 400);
-    assert.ok(checkoutRes.body.error.includes('Minimum top-up amount is ₹1.00'));
+    assert.ok(checkoutRes.body.error.includes('between ₹1.00'));
   });
 
   test('GET /order-failed renders failed order page with deep link to support', async () => {
@@ -275,39 +273,61 @@ describe('Coin Top-Up Wallet Demo Store Integration Tests', () => {
     assert.ok(res.body.includes('Try Again'));
   });
 
-  test('POST /api/verify-payment credits coins directly from popup drawer and prevents duplicates', async () => {
+  test('POST /api/verify-payment refuses to credit coins for unpaid or unknown payments', async () => {
     const initialCoins = storeInstance.server.walletCoins;
-    const orderId = `COIN-ORD-POPUP-${Date.now()}`;
 
-    // 1. Initial verification call
-    const verifyRes = await request('/api/verify-payment', {
+    // Old exploit: client-chosen orderId and coin count with no payment at all.
+    const forged = await request('/api/verify-payment', {
       method: 'POST',
-      body: {
-        orderId,
-        coins: 100,
-        packName: 'Starter Pack'
-      }
+      body: { orderId: `COIN-ORD-FAKE-${Date.now()}`, coins: 999999, packName: 'Free Coins' }
     });
+    assert.equal(forged.status, 400);
+    assert.equal(storeInstance.server.walletCoins, initialCoins);
 
-    assert.equal(verifyRes.status, 200);
-    assert.equal(verifyRes.body.success, true);
-    assert.equal(verifyRes.body.coins, initialCoins + 100);
-    assert.equal(storeInstance.server.walletCoins, initialCoins + 100);
-
-    // 2. Duplicate call must be idempotent
-    const dupRes = await request('/api/verify-payment', {
+    // A real but unpaid payment must not be credited either.
+    const checkoutRes = await request('/api/checkout', {
       method: 'POST',
-      body: {
-        orderId,
-        coins: 100,
-        packName: 'Starter Pack'
-      }
+      body: { price: 50, coins: 999999 }
     });
+    assert.equal(checkoutRes.status, 200);
+    const unpaid = await request('/api/verify-payment', {
+      method: 'POST',
+      body: { paymentId: checkoutRes.body.paymentId, orderId: checkoutRes.body.orderId }
+    });
+    assert.equal(unpaid.status, 402);
+    assert.equal(storeInstance.server.walletCoins, initialCoins);
+  });
 
-    assert.equal(dupRes.status, 200);
-    assert.equal(dupRes.body.success, true);
-    assert.equal(dupRes.body.message, 'Already credited');
-    assert.equal(storeInstance.server.walletCoins, initialCoins + 100);
+  test('POST /api/verify-payment credits server-decided coins once for a SUCCESS payment', async () => {
+    const initialCoins = storeInstance.server.walletCoins;
+    const client = storeInstance.server.paymentClient;
+    const originalGetPayment = client.getPayment.bind(client);
+    const orderId = `COIN-ORD-PAID-${Date.now()}`;
+    storeInstance.server.pendingOrders.set(orderId, { coins: 100, amountPaise: 10000, packName: 'Starter Pack' });
+    client.getPayment = async () => ({
+      paymentId: 'pay_test_1', orderId, status: 'SUCCESS', amount: '100.00', amountPaise: '10000',
+      metadata: { coins: 100000, packName: 'Starter Pack' } // tampered metadata is ignored
+    });
+    try {
+      const verifyRes = await request('/api/verify-payment', {
+        method: 'POST',
+        body: { paymentId: 'pay_test_1', orderId, coins: 5000 }
+      });
+      assert.equal(verifyRes.status, 200);
+      assert.equal(verifyRes.body.success, true);
+      assert.equal(verifyRes.body.credited, 100);
+      assert.equal(storeInstance.server.walletCoins, initialCoins + 100);
+
+      const dupRes = await request('/api/verify-payment', {
+        method: 'POST',
+        body: { paymentId: 'pay_test_1', orderId }
+      });
+      assert.equal(dupRes.status, 200);
+      assert.equal(dupRes.body.message, 'Already credited');
+      assert.equal(storeInstance.server.walletCoins, initialCoins + 100);
+    } finally {
+      client.getPayment = originalGetPayment;
+    }
   });
 
   test('GET /order-success renders verified payment page with parameters', async () => {

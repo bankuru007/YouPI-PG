@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getDatabase, MerchantRepository, SupportTicketRepository } from '@youpi/db';
-import { getStrongSecret, safeEqual, isPlaceholderSecret } from '@youpi/common';
+import { getStrongSecret, safeEqual, isPlaceholderSecret, clientIpFromRequest, proxyForwardingHeaders } from '@youpi/common';
 
 // ---------------------------------------------------------------------------
 // SECURITY: the merchant admin panel is protected with HTTP Basic auth and
@@ -22,7 +22,8 @@ function getPanelCredentials() {
 }
 
 function clientIp(req) {
-  return req.socket?.remoteAddress || 'unknown';
+  // Behind cloudflared every request arrives from loopback; use the forwarded client address then.
+  return clientIpFromRequest(req);
 }
 
 function isLockedOut(ip) {
@@ -166,7 +167,14 @@ export class AdminServer {
 
   createServer() {
     return http.createServer(async (req, res) => {
-      const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+      let url;
+      try {
+        url = new URL(req.url, 'http://localhost');
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'text/plain' });
+        res.end('Bad Request');
+        return;
+      }
       const pathname = url.pathname;
 
       if (req.method === 'OPTIONS') {
@@ -257,6 +265,7 @@ export class AdminServer {
           method: req.method,
           headers: {
             ...stripAuthHeaders(req.headers),
+            ...proxyForwardingHeaders(req),
             // Server-side admin credential; never exposed to the browser.
             ...(getStrongSecret('ADMIN_API_TOKEN') ? { 'x-admin-token': getStrongSecret('ADMIN_API_TOKEN') } : {}),
             'x-merchant-id': req.headers['x-merchant-id'] || defaultMerchantId,
@@ -282,10 +291,9 @@ export class AdminServer {
 
       // Download Android Companion APK
       if (pathname === '/youpi-sms-gateway.apk' || pathname === '/api/v1/admin/sms-gateway/download-apk') {
+        // Only an APK built locally from source is served (see scripts/build-android-apk.js).
         const apkCandidates = [
-          path.resolve(__dirname, '../public/youpi-sms-gateway.apk'),
-          path.resolve(__dirname, '../../payment-api/public/youpi-sms-gateway.apk'),
-          path.resolve(__dirname, '../../android-observer-app/youpi-sms-gateway.apk')
+          path.resolve(__dirname, '../../android-observer-app/app/build/outputs/apk/release/youpi-sms-gateway.apk')
         ];
         let apkPath = null;
         for (const p of apkCandidates) {
@@ -313,7 +321,12 @@ export class AdminServer {
         const html = this.renderHtml();
         res.writeHead(200, {
           'Content-Type': 'text/html; charset=utf-8',
-          'Cache-Control': 'no-cache'
+          'Cache-Control': 'no-store',
+          // Clickjacking protection: the admin panel must never be framed.
+          'X-Frame-Options': 'DENY',
+          'Content-Security-Policy': "frame-ancestors 'none'",
+          'X-Content-Type-Options': 'nosniff',
+          'Referrer-Policy': 'same-origin'
         });
         res.end(html);
         return;

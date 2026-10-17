@@ -1,4 +1,4 @@
-import { safeEqual, getStrongSecret } from '@youpi/common';
+import { safeEqual, getStrongSecret, internalRenderToken } from '@youpi/common';
 
 /**
  * Central access control for the Payment API.
@@ -56,6 +56,9 @@ const OBSERVER_ALLOWED_ADMIN_PATHS = new Set([
 ]);
 
 const SIMULATE_OBSERVATION_RE = /^\/api\/v1\/checkout\/[^/]+\/simulate-observation$/;
+// Merchant-backend endpoints that return customer details (looked up by guessable order IDs)
+// and device records. These are for the merchant's server, never the browser.
+const MERCHANT_BACKEND_RE = /^\/api\/v1\/(orders\/[^/]+\/cod|payments\/[^/]+\/cod|devices\/customer\/[^/]+|devices\/(?!register$|verify$)[^/]+)$/;
 
 function deny(res, status, error) {
   res.writeHead(status, {
@@ -75,6 +78,7 @@ export function requiredAccessFor(pathname) {
   if (OBSERVER_ALLOWED_ADMIN_PATHS.has(pathname)) return 'admin-or-observer';
   if (pathname === '/api/v1/admin' || pathname.startsWith('/api/v1/admin/')) return 'admin';
   if (SIMULATE_OBSERVATION_RE.test(pathname)) return 'admin';
+  if (MERCHANT_BACKEND_RE.test(pathname)) return 'admin';
   if (OBSERVER_PATHS.has(pathname)) return 'observer';
   return null;
 }
@@ -101,4 +105,54 @@ export function accessGuard(req, res, pathname) {
     return deny(res, 503, 'Observer ingestion is disabled: set OBSERVER_INGEST_TOKEN (at least 32 random characters) in .env.');
   }
   return isObserverRequest(req) ? false : deny(res, 401, 'Unauthorized: valid observer token required.');
+}
+
+/**
+ * Customer identity from a customer session token (Authorization: Bearer, X-Customer-Token,
+ * or body.token / body.sessionToken). Returns null when there is no valid token.
+ * @param {import('node:http').IncomingMessage} req
+ * @param {any} body
+ * @param {{ customerSessionRepo?: any }} ctx
+ */
+export function getAuthenticatedCustomer(req, body, ctx) {
+  if (!ctx?.customerSessionRepo) return null;
+  const auth = headerValue(req, 'authorization');
+  const token = (auth.startsWith('Bearer ') ? auth.slice(7).trim() : '') ||
+    headerValue(req, 'x-customer-token') ||
+    (body && (body.token || body.sessionToken)) || '';
+  if (!token || typeof token !== 'string') return null;
+  const authContext = ctx.customerSessionRepo.findByToken(token);
+  return authContext?.customer || null;
+}
+
+/**
+ * Resolves which customer a request may act as.
+ * - An admin may name any customerId.
+ * - Everyone else is limited to the customer behind their own session token.
+ * @returns {{ customer: any|null, rejected: boolean }} rejected=true when a customerId was
+ *          supplied that the caller is not allowed to use.
+ */
+export function resolveActingCustomer(req, body, ctx) {
+  const requestedId = body?.customerId || null;
+  const tokenCustomer = getAuthenticatedCustomer(req, body, ctx);
+  if (requestedId) {
+    if (isAdminRequest(req)) {
+      return { customer: ctx.customerRepo ? ctx.customerRepo.findById(requestedId) : null, rejected: false };
+    }
+    if (tokenCustomer && tokenCustomer.id === requestedId) {
+      return { customer: tokenCustomer, rejected: false };
+    }
+    return { customer: null, rejected: true };
+  }
+  return { customer: tokenCustomer, rejected: false };
+}
+
+/**
+ * True for the checkout portal's own server-side state fetches.
+ * @param {import('node:http').IncomingMessage} req
+ */
+export function isInternalRenderRequest(req) {
+  const expected = internalRenderToken();
+  const supplied = headerValue(req, 'x-internal-render');
+  return Boolean(expected && supplied) && safeEqual(supplied, expected);
 }

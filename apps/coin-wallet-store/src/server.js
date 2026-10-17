@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { YoupiPaymentClient } from '@youpi/merchant-sdk';
+import { getDatabase, MerchantRepository } from '@youpi/db';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -17,6 +18,31 @@ if (!process.env.BASE_PAYMENT_API_URL && typeof process.loadEnvFile === 'functio
   } catch {}
 }
 
+// Values from the query string are reflected into HTML text and inline-script string
+// literals, so escape everything that could break out of either context.
+function loadMerchantWebhookSecret(merchantId) {
+  try {
+    const repo = new MerchantRepository(getDatabase());
+    return repo.findById(merchantId)?.webhookSecret || null;
+  } catch {
+    return null;
+  }
+}
+
+function escapeForPage(value) {
+  if (value === null || value === undefined) return '';
+  return String(value)
+    .slice(0, 200)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+    .replace(/`/g, '&#96;')
+    .replace(/\\/g, '&#92;')
+    .replace(/[\r\n\u2028\u2029]/g, ' ');
+}
+
 export class CoinWalletStoreServer {
   /**
    * @param {{
@@ -29,7 +55,8 @@ export class CoinWalletStoreServer {
     const internalPort = process.env.PAYMENT_API_PORT || 6100;
     this.gatewayApiUrl = options.gatewayApiUrl || process.env.PAYMENT_API_INTERNAL_URL || `http://127.0.0.1:${internalPort}`;
     this.merchantId = options.merchantId || '00000000-0000-0000-0000-000000000001';
-    this.webhookSecret = options.webhookSecret || 'merchant_webhook_secret_for_wallet_store';
+    // SECURITY: no hardcoded fallback. Use the secret configured for this merchant.
+    this.webhookSecret = options.webhookSecret || process.env.COIN_STORE_WEBHOOK_SECRET || loadMerchantWebhookSecret(this.merchantId);
 
     this.paymentClient = new YoupiPaymentClient({
       apiUrl: this.gatewayApiUrl,
@@ -40,6 +67,10 @@ export class CoinWalletStoreServer {
     // In-memory persistent wallet balance & ledger for demo store
     this.walletCoins = 50; // default starting balance
     this.transactionHistory = [];
+    // Orders this store created: orderId -> { coins, amountPaise, packName }.
+    // SECURITY: anyone can create a gateway payment with any metadata, so coins are only
+    // credited for orders the store created itself, at the amount it expects.
+    this.pendingOrders = new Map();
 
     this.storeHtml = fs.readFileSync(path.join(__dirname, 'store.html'), 'utf8');
     this.walletHtml = fs.readFileSync(path.join(__dirname, 'wallet.html'), 'utf8');
@@ -63,7 +94,14 @@ export class CoinWalletStoreServer {
 
   createServer() {
     return http.createServer(async (req, res) => {
-      const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+      let url;
+      try {
+        url = new URL(req.url, 'http://localhost');
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'text/plain' });
+        res.end('Bad Request');
+        return;
+      }
       const pathname = url.pathname;
       const method = req.method.toUpperCase();
 
@@ -233,11 +271,11 @@ export class CoinWalletStoreServer {
         const timestamp = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
 
         let rendered = this.orderSuccessHtml
-          .replaceAll('{{ORDER_ID}}', orderId)
-          .replaceAll('{{AMOUNT}}', amount)
-          .replaceAll('{{UTR}}', utr)
-          .replaceAll('{{MODE}}', mode)
-          .replaceAll('{{TIMESTAMP}}', timestamp);
+          .replaceAll('{{ORDER_ID}}', () => escapeForPage(orderId))
+          .replaceAll('{{AMOUNT}}', () => escapeForPage(amount))
+          .replaceAll('{{UTR}}', () => escapeForPage(utr))
+          .replaceAll('{{MODE}}', () => escapeForPage(mode))
+          .replaceAll('{{TIMESTAMP}}', () => escapeForPage(timestamp));
 
         res.writeHead(200, {
           'Content-Type': 'text/html; charset=utf-8',
@@ -254,9 +292,9 @@ export class CoinWalletStoreServer {
         const orderId = url.searchParams.get('order_id') || url.searchParams.get('orderId') || 'ORDER-DEMO';
         const reason = url.searchParams.get('reason') || 'Transaction verification timed out or declined.';
         let rendered = this.orderFailedHtml
-          .replaceAll('{{ORDER_ID}}', orderId)
-          .replaceAll('ORDER-#', orderId)
-          .replaceAll('{{REASON}}', reason);
+          .replaceAll('{{ORDER_ID}}', () => escapeForPage(orderId))
+          .replaceAll('ORDER-#', () => escapeForPage(orderId))
+          .replaceAll('{{REASON}}', () => escapeForPage(reason));
 
         res.writeHead(200, {
           'Content-Type': 'text/html; charset=utf-8',
@@ -271,7 +309,7 @@ export class CoinWalletStoreServer {
       if ((pathname === '/order-suspicious' || pathname === '/suspicious') && (method === 'GET' || method === 'HEAD')) {
         try { this.orderSuspiciousHtml = fs.readFileSync(path.join(__dirname, 'order-suspicious.html'), 'utf8'); } catch {}
         const orderId = url.searchParams.get('order_id') || url.searchParams.get('orderId') || 'ORDER-DEMO';
-        let rendered = this.orderSuspiciousHtml.replaceAll('{{ORDER_ID}}', orderId);
+        let rendered = this.orderSuspiciousHtml.replaceAll('{{ORDER_ID}}', () => escapeForPage(orderId));
 
         res.writeHead(200, {
           'Content-Type': 'text/html; charset=utf-8',
@@ -286,7 +324,7 @@ export class CoinWalletStoreServer {
       if ((pathname === '/order-expired' || pathname === '/expired') && (method === 'GET' || method === 'HEAD')) {
         try { this.orderExpiredHtml = fs.readFileSync(path.join(__dirname, 'order-expired.html'), 'utf8'); } catch {}
         const orderId = url.searchParams.get('order_id') || url.searchParams.get('orderId') || 'ORDER-DEMO';
-        let rendered = this.orderExpiredHtml.replaceAll('{{ORDER_ID}}', orderId);
+        let rendered = this.orderExpiredHtml.replaceAll('{{ORDER_ID}}', () => escapeForPage(orderId));
 
         res.writeHead(200, {
           'Content-Type': 'text/html; charset=utf-8',
@@ -301,7 +339,7 @@ export class CoinWalletStoreServer {
       if ((pathname === '/order-cancelled' || pathname === '/cancelled') && (method === 'GET' || method === 'HEAD')) {
         try { this.orderCancelledHtml = fs.readFileSync(path.join(__dirname, 'order-cancelled.html'), 'utf8'); } catch {}
         const orderId = url.searchParams.get('order_id') || url.searchParams.get('orderId') || 'ORDER-DEMO';
-        let rendered = this.orderCancelledHtml.replaceAll('{{ORDER_ID}}', orderId);
+        let rendered = this.orderCancelledHtml.replaceAll('{{ORDER_ID}}', () => escapeForPage(orderId));
 
         res.writeHead(200, {
           'Content-Type': 'text/html; charset=utf-8',
@@ -334,9 +372,9 @@ export class CoinWalletStoreServer {
             const data = JSON.parse(body || '{}');
             const rawVal = data.price !== undefined ? data.price : (data.amount !== undefined ? data.amount : 1.00);
             const price = Number(rawVal);
-            if (isNaN(price) || price < 1) {
+            if (isNaN(price) || price < 1 || price > 100000) {
               res.writeHead(400, { 'Content-Type': 'application/json' });
-              res.end(JSON.stringify({ error: 'Minimum top-up amount is ₹1.00' }));
+              res.end(JSON.stringify({ error: 'Top-up amount must be between ₹1.00 and ₹1,00,000.' }));
               return;
             }
             const orderId = `COIN-ORD-${Date.now()}`;
@@ -352,9 +390,17 @@ export class CoinWalletStoreServer {
               currency: 'INR',
               returnUrl,
               metadata: {
-                coins: data.coins || Math.round(price),
-                packName: data.packName || data.productName || 'Gamer Pack'
+                // SECURITY: the server decides how many coins a price buys (1 coin per rupee).
+                // Never trust a coin count sent by the browser.
+                coins: Math.floor(price),
+                packName: String(data.packName || data.productName || 'Gamer Pack').replace(/[<>"'`]/g, '').slice(0, 60)
               }
+            });
+
+            this.pendingOrders.set(orderId, {
+              coins: Math.floor(price),
+              amountPaise: Math.round(price * 100),
+              packName: String(data.packName || data.productName || 'Gamer Pack').replace(/[<>"'`]/g, '').slice(0, 60)
             });
 
             // Normalize checkoutUrl for localhost development / testing to prevent tunnel offline issues
@@ -387,13 +433,34 @@ export class CoinWalletStoreServer {
         req.on('end', async () => {
           try {
             const data = JSON.parse(body || '{}');
-            const { paymentId, orderId, coins, packName } = data;
+            const { paymentId } = data;
 
-            if (!orderId && !paymentId) {
+            // SECURITY: coins are only credited for a payment the gateway reports as SUCCESS.
+            // The browser cannot choose the order, the amount or the number of coins.
+            if (!paymentId || typeof paymentId !== 'string') {
               res.writeHead(400, { 'Content-Type': 'application/json' });
-              res.end(JSON.stringify({ error: 'Missing orderId or paymentId' }));
+              res.end(JSON.stringify({ error: 'Missing paymentId' }));
               return;
             }
+
+            let session = null;
+            try {
+              session = await this.paymentClient.getPayment(paymentId);
+            } catch (e) {
+              console.warn('[Coin Wallet Store] getPayment failed:', e.message);
+            }
+            if (!session || session.status !== 'SUCCESS') {
+              res.writeHead(402, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ success: false, error: 'Payment is not confirmed yet.' }));
+              return;
+            }
+            if (data.orderId && data.orderId !== session.orderId) {
+              res.writeHead(409, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ success: false, error: 'orderId does not match the payment.' }));
+              return;
+            }
+
+            const orderId = session.orderId;
 
             // Check if already credited
             const alreadyCredited = this.transactionHistory.some(t => t.orderId === orderId);
@@ -406,21 +473,15 @@ export class CoinWalletStoreServer {
               return;
             }
 
-            // Verify with payment API if paymentId is available
-            let creditedCoins = Number(coins) || 100;
-            let finalPackName = packName || 'Coin Pack';
-
-            if (paymentId) {
-              try {
-                const session = await this.paymentClient.getPayment(paymentId);
-                if (session) {
-                  if (session.metadata?.coins) creditedCoins = Number(session.metadata.coins);
-                  if (session.metadata?.packName) finalPackName = session.metadata.packName;
-                }
-              } catch (e) {
-                console.warn('[Coin Wallet Store] getPayment check note:', e.message);
-              }
+            const order = this.pendingOrders.get(orderId);
+            const paidPaise = Number(session.amountPaise ?? Math.round(Number(session.amount) * 100));
+            if (!order || paidPaise !== order.amountPaise) {
+              res.writeHead(409, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ success: false, error: 'Payment does not match an order from this store.' }));
+              return;
             }
+            const creditedCoins = order.coins;
+            const finalPackName = order.packName;
 
             this.creditCoins(orderId, creditedCoins, finalPackName);
             console.log(`[Coin Wallet Store] Verified & credited ${creditedCoins} coins for Order ${orderId}. New balance: ${this.walletCoins}`);
@@ -457,9 +518,18 @@ export class CoinWalletStoreServer {
             if (event.event === 'SUCCESS' || event.status === 'SUCCESS') {
               const orderId = event.orderId || event.data?.orderId;
               const alreadyCredited = this.transactionHistory.some(t => t.orderId === orderId);
+              const order = this.pendingOrders.get(orderId);
+              const paidPaise = Number(event.amountPaise ?? event.data?.amountPaise ?? Math.round(Number(event.amount || event.data?.amount) * 100));
+              if (!order || paidPaise !== order.amountPaise) {
+                // Signed, but not an order this store created (or wrong amount): do not credit.
+                console.warn(`[Coin Wallet Store] Ignoring webhook for unknown order or amount mismatch: ${orderId}`);
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ received: true, credited: false }));
+                return;
+              }
               if (!alreadyCredited) {
-                const coinsToAdd = Number(event.metadata?.coins || event.data?.metadata?.coins) || 100;
-                const packName = event.metadata?.packName || event.data?.metadata?.packName || 'Coin Pack';
+                const coinsToAdd = order.coins;
+                const packName = order.packName;
                 this.creditCoins(orderId, coinsToAdd, packName);
                 console.log(`[Coin Wallet Store] Webhook received! Credited ${coinsToAdd} coins for Order ${orderId}. New balance: ${this.walletCoins}`);
               }

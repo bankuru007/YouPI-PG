@@ -59,10 +59,14 @@ app.post('/api/payment/webhook', express.raw({ type: 'application/json' }), (req
     const event = client.verifyWebhook(rawBody, signature);
 
     switch (event.event) {
-      case 'SUCCESS':
-        // Fulfill customer order
-        unlockServiceForCustomer(event.orderId, event.metadata);
+      case 'SUCCESS': {
+        // Anyone can create a payment on the public API with any orderId, amount and metadata.
+        // Only fulfil orders you created, for the amount you expect, paid by UPI.
+        const order = db.orders.findById(event.orderId);
+        if (!order || BigInt(order.amountPaise) !== BigInt(event.amountPaise) || event.method !== 'UPI') break;
+        unlockServiceForCustomer(order); // use YOUR order record, not event.metadata
         break;
+      }
       case 'FAILED':
         // Mark order as failed, notify customer to retry
         break;

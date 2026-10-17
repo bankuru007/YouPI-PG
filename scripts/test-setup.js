@@ -17,7 +17,10 @@ const TEST_SECRETS = {
   OBSERVER_INGEST_TOKEN: 'test-observer-token-0123456789abcdef0123456789ab',
   ANDROID_ENROLLMENT_SECRET: 'test-enrollment-secret-0123456789abcdef01234567',
   ADMIN_PANEL_USER: 'test-admin',
-  ADMIN_PANEL_PASSWORD: 'test-panel-password-123456'
+  ADMIN_PANEL_PASSWORD: 'test-panel-password-123456',
+  // Existing suites read the OTP from the API response and hit endpoints in tight loops.
+  YOUPI_DEV_OTP: '1',
+  YOUPI_RATE_LIMIT_DISABLED: '1'
 };
 
 for (const [key, value] of Object.entries(TEST_SECRETS)) {

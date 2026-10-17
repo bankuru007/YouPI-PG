@@ -80,6 +80,7 @@ export function generateHmac(data, secret) {
  * @returns {boolean}
  */
 export function verifyHmac(data, secret, expectedSignature) {
+  if (typeof expectedSignature !== 'string' || !/^[0-9a-f]{64}$/i.test(expectedSignature)) return false;
   const actualSignature = generateHmac(data, secret);
   const actualBuffer = Buffer.from(actualSignature, 'hex');
   const expectedBuffer = Buffer.from(expectedSignature, 'hex');
@@ -108,7 +109,7 @@ export function generateRandomToken(bytes = 32) {
  */
 export function hashPassword(password) {
   const salt = crypto.randomBytes(16).toString('hex');
-  const iterations = 100000;
+  const iterations = 210000; // OWASP 2023 guidance for PBKDF2-HMAC-SHA512
   const hash = crypto.pbkdf2Sync(password, salt, iterations, 64, 'sha512').toString('hex');
   return `${iterations}:${salt}:${hash}`;
 }
@@ -120,13 +121,19 @@ export function hashPassword(password) {
  * @returns {boolean}
  */
 export function verifyPassword(password, storedHash) {
+  if (typeof password !== 'string' || typeof storedHash !== 'string') return false;
   const parts = storedHash.split(':');
   if (parts.length !== 3) return false;
 
   const iterations = parseInt(parts[0], 10);
   const salt = parts[1];
   const originalHash = parts[2];
+  // Reject malformed hashes instead of throwing, and cap work factor from stored data.
+  if (!Number.isInteger(iterations) || iterations < 1 || iterations > 10_000_000) return false;
+  if (!/^[0-9a-f]+$/i.test(originalHash) || originalHash.length !== 128) return false;
 
-  const checkHash = crypto.pbkdf2Sync(password, salt, iterations, 64, 'sha512').toString('hex');
-  return crypto.timingSafeEqual(Buffer.from(checkHash, 'hex'), Buffer.from(originalHash, 'hex'));
+  const checkHash = crypto.pbkdf2Sync(password, salt, iterations, 64, 'sha512');
+  const expected = Buffer.from(originalHash, 'hex');
+  if (checkHash.length !== expected.length) return false;
+  return crypto.timingSafeEqual(checkHash, expected);
 }

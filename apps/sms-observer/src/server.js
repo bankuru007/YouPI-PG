@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { isTrustedServiceRequest } from '@youpi/common';
 import { SmsObserverService } from './sms-service.js';
 import { GoogleMessagesAutomator } from './browser-automator.js';
 
@@ -17,7 +18,14 @@ export class SmsObserverServer {
 
   createServer() {
     return http.createServer(async (req, res) => {
-      const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+      let url;
+      try {
+        url = new URL(req.url, 'http://localhost');
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'text/plain' });
+        res.end('Bad Request');
+        return;
+      }
       const pathname = url.pathname;
       const method = (req.method || 'GET').toUpperCase();
 
@@ -28,6 +36,14 @@ export class SmsObserverServer {
           'Access-Control-Allow-Headers': 'Content-Type'
         });
         res.end();
+        return;
+      }
+
+      // SECURITY: only /health is public. SMS injection, sweeps and browser control need the
+      // observer/admin token, otherwise anyone could post a fake bank SMS.
+      if (pathname !== '/health' && !isTrustedServiceRequest(req)) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Unauthorized' }));
         return;
       }
 
@@ -106,7 +122,10 @@ export class SmsObserverServer {
       // POST /process-sms (Direct SMS intake / Google Messages Web bridge)
       if (pathname === '/process-sms' && req.method === 'POST') {
         let body = '';
-        req.on('data', chunk => { body += chunk; });
+        req.on('data', chunk => {
+          body += chunk;
+          if (body.length > 64 * 1024) req.destroy();
+        });
         req.on('end', async () => {
           try {
             const smsData = JSON.parse(body);

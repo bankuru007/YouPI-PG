@@ -1,4 +1,4 @@
-import { observerAuthHeaders, resolveGmailRedirectUri } from '@youpi/common';
+import { observerAuthHeaders, resolveGmailRedirectUri, isTrustedServiceRequest, createOAuthState, verifyOAuthState, escapeHtmlText } from '@youpi/common';
 import http from 'node:http';
 import { GmailPoller } from './gmail-poller.js';
 import { GmailBrowserAutomator } from './browser-automator.js';
@@ -18,7 +18,14 @@ export class GmailObserverServer {
 
   createServer() {
     return http.createServer(async (req, res) => {
-      const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+      let url;
+      try {
+        url = new URL(req.url, 'http://localhost');
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'text/plain' });
+        res.end('Bad Request');
+        return;
+      }
       const pathname = url.pathname;
       const method = (req.method || 'GET').toUpperCase();
 
@@ -29,6 +36,15 @@ export class GmailObserverServer {
           'Access-Control-Allow-Headers': 'Content-Type'
         });
         res.end();
+        return;
+      }
+
+      // SECURITY: only /health and the Google OAuth callback are public. Everything else
+      // (email injection, sweeps, browser control, stop, OAuth URL) needs the observer/admin token.
+      const isPublicRoute = pathname === '/health' || pathname === '/oauth/callback';
+      if (!isPublicRoute && !isTrustedServiceRequest(req)) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Unauthorized' }));
         return;
       }
 
@@ -73,7 +89,13 @@ export class GmailObserverServer {
 
         const finalRedirectUri = resolveGmailRedirectUri();
         const scope = encodeURIComponent('https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/userinfo.email');
-        const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(finalRedirectUri)}&response_type=code&scope=${scope}&access_type=offline&prompt=consent&include_granted_scopes=true`;
+        const state = createOAuthState();
+        if (!state) {
+          res.writeHead(503, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Set ADMIN_API_TOKEN to enable Gmail OAuth.' }));
+          return;
+        }
+        const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(finalRedirectUri)}&response_type=code&scope=${scope}&access_type=offline&prompt=consent&include_granted_scopes=true&state=${encodeURIComponent(state)}`;
 
         res.writeHead(200, {
           'Content-Type': 'application/json',
@@ -90,7 +112,15 @@ export class GmailObserverServer {
 
         if (error) {
           res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
-          res.end(`<h1>Google OAuth Authorization Error</h1><p>${error}</p>`);
+          res.end(`<h1>Google OAuth Authorization Error</h1><p>${escapeHtmlText(error)}</p>`);
+          return;
+        }
+
+        // SECURITY (OAuth CSRF): only accept callbacks for flows this deployment started.
+        // Without this, anyone could link their own Gmail inbox and feed it fake bank alerts.
+        if (!verifyOAuthState(url.searchParams.get('state'))) {
+          res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
+          res.end('<h1>Invalid or expired OAuth state</h1><p>Start the Gmail connection again from the merchant admin panel.</p>');
           return;
         }
 
@@ -339,7 +369,7 @@ export class GmailObserverServer {
             <head><meta charset="utf-8"><title>OAuth Error</title></head>
             <body style="font-family:sans-serif; background:#090d16; color:#f8fafc; padding:2rem; text-align:center;">
               <h2 style="color:#ef4444;">Google Authorization Failed</h2>
-              <p style="color:#94a3b8;">${err.message}</p>
+              <p style="color:#94a3b8;">${escapeHtmlText(err.message)}</p>
               <button onclick="window.close()" style="background:#3b82f6; color:#fff; border:none; padding:0.6rem 1.2rem; border-radius:0.4rem; cursor:pointer;">Close Window</button>
             </body>
             </html>
@@ -413,7 +443,10 @@ export class GmailObserverServer {
       // POST /process-email (Direct email ingestion / test injection)
       if (pathname === '/process-email' && req.method === 'POST') {
         let body = '';
-        req.on('data', chunk => { body += chunk; });
+        req.on('data', chunk => {
+          body += chunk;
+          if (body.length > 256 * 1024) req.destroy();
+        });
         req.on('end', async () => {
           try {
             const emailData = JSON.parse(body);

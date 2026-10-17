@@ -114,7 +114,9 @@ test('WhatsApp Berry Protocol OTP Customer Auth & Merchant Configuration Suite',
     const data = await res.json();
     assert.equal(data.success, true);
     assert.equal(data.exists, true);
-    assert.equal(data.customer.name, 'Rohan Sharma');
+    // Unauthenticated lookup only returns masked details.
+    assert.equal(data.customer.name, 'R**** S****');
+    assert.equal(data.customer.id, undefined);
   });
 
   let loginOtp = null;

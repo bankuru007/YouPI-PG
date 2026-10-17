@@ -3392,13 +3392,19 @@
 
     // Helper to escape HTML safely
     function escapeHtml(str) {
-      if (!str) return '';
+      if (str === null || str === undefined) return '';
       return String(str)
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#039;');
+        .replace(/'/g, '&#039;')
+        .replace(/`/g, '&#096;');
+    }
+
+    // Safe value for a JS string argument inside an HTML attribute, e.g. onclick="fn(${jsAttr(id)})"
+    function jsAttr(value) {
+      return escapeHtml(JSON.stringify(value === null || value === undefined ? '' : String(value)));
     }
 
     // --- REAL LIGHT / DARK THEME CONTROLLER ---
@@ -3623,20 +3629,20 @@
             ${isStore ? '<span class="badge badge-info" style="font-size:0.68rem; margin-left:0.4rem;">Demo Store</span>' : ''}
             <div style="font-size:0.75rem; color:var(--text-muted); font-family:monospace;">${escapeHtml(s.id)}</div>
           </td>
-          <td><code style="color:#f59e0b; background:#070c17; padding:2px 6px; border-radius:4px; font-weight:700;">${s.port}</code></td>
-          <td><code style="color:#38bdf8;">${s.pid || '-'}</code></td>
-          <td><span class="badge ${badgeClass}">${statusIcon} ${s.status}</span></td>
+          <td><code style="color:#f59e0b; background:#070c17; padding:2px 6px; border-radius:4px; font-weight:700;">${escapeHtml(s.port)}</code></td>
+          <td><code style="color:#38bdf8;">${escapeHtml(s.pid || '-')}</code></td>
+          <td><span class="badge ${badgeClass}">${statusIcon} ${escapeHtml(s.status)}</span></td>
           <td style="font-size:0.8rem; color:var(--text-muted);">${uptimeStr}</td>
           <td>
             <div style="display:flex; gap:0.4rem;">
               ${!isRunning ? `
-                <button class="btn btn-success" style="padding:0.3rem 0.65rem; font-size:0.75rem;" onclick="startService('${s.id}')">▶ Start</button>
+                <button class="btn btn-success" style="padding:0.3rem 0.65rem; font-size:0.75rem;" onclick="startService(${jsAttr(s.id)})">▶ Start</button>
               ` : `
-                <button class="btn btn-danger" style="padding:0.3rem 0.65rem; font-size:0.75rem;" onclick="stopService('${s.id}')">⏹ Stop</button>
-                <button class="btn btn-secondary" style="padding:0.3rem 0.65rem; font-size:0.75rem;" onclick="restartService('${s.id}')">🔄 Restart</button>
+                <button class="btn btn-danger" style="padding:0.3rem 0.65rem; font-size:0.75rem;" onclick="stopService(${jsAttr(s.id)})">⏹ Stop</button>
+                <button class="btn btn-secondary" style="padding:0.3rem 0.65rem; font-size:0.75rem;" onclick="restartService(${jsAttr(s.id)})">🔄 Restart</button>
               `}
               ${isRunning && s.port ? `
-                <a href="http://localhost:${s.port}" target="_blank" class="btn btn-secondary" style="padding:0.3rem 0.55rem; font-size:0.75rem; text-decoration:none;" title="Open in browser">↗</a>
+                <a href="http://localhost:${escapeHtml(s.port)}" target="_blank" class="btn btn-secondary" style="padding:0.3rem 0.55rem; font-size:0.75rem; text-decoration:none;" title="Open in browser">↗</a>
               ` : ''}
             </div>
           </td>
@@ -3900,7 +3906,7 @@
         const s = remainingSec % 60;
         content.innerHTML = `
         <div style="font-size:1.75rem; font-weight:800; color:#38bdf8;">₹${(Number(currentSlot.amountPaise) / 100).toFixed(2)}</div>
-        <div style="font-weight:700; margin:0.35rem 0;">Order #${currentSlot.orderId}</div>
+        <div style="font-weight:700; margin:0.35rem 0;">Order #${escapeHtml(currentSlot.orderId)}</div>
         <div class="badge badge-info">ACTIVE (⏱ ${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')} remaining)</div>
       `;
       } else {
@@ -3919,7 +3925,7 @@
         const remainingSec = currentSlot.processingExpiresAt ? Math.max(0, Math.ceil((new Date(currentSlot.processingExpiresAt).getTime() - Date.now()) / 1000)) : 0;
         content.innerHTML = `
         <div style="font-size:1.75rem; font-weight:800; color:#fbbf24;">₹${(Number(currentSlot.amountPaise) / 100).toFixed(2)}</div>
-        <div style="font-weight:700; margin:0.35rem 0;">Order #${currentSlot.orderId}</div>
+        <div style="font-weight:700; margin:0.35rem 0;">Order #${escapeHtml(currentSlot.orderId)}</div>
         <div class="badge badge-warning">VERIFYING (⏳ ${remainingSec}s remaining)</div>
       `;
       } else {
@@ -3937,8 +3943,8 @@
       }
       tbody.innerHTML = queue.map(q => `
       <tr>
-        <td><strong>#${q.queuePosition}</strong></td>
-        <td>Order #${q.orderId}</td>
+        <td><strong>#${escapeHtml(q.queuePosition)}</strong></td>
+        <td>Order #${escapeHtml(q.orderId)}</td>
         <td>₹${(Number(q.amountPaise) / 100).toFixed(2)}</td>
         <td><span class="badge badge-warning">QUEUED</span></td>
         <td>${new Date(q.createdAt).toLocaleTimeString()}</td>
@@ -4017,7 +4023,7 @@
 
       tbody.innerHTML = pending.map(p => `
       <tr>
-        <td><strong>Order #${p.orderId}</strong></td>
+        <td><strong>Order #${escapeHtml(p.orderId)}</strong></td>
         <td><code style="font-size:0.75rem;">${p.id.substring(0, 16)}...</code></td>
         <td><strong style="color:#34d399; font-size:1.15rem;">₹${(Number(p.amountPaise) / 100).toFixed(2)}</strong></td>
         <td>
@@ -4028,8 +4034,8 @@
         <td>${new Date(p.createdAt).toLocaleTimeString()}</td>
         <td>
           <div style="display:flex; gap:0.4rem;">
-            <button class="btn btn-success" style="padding:0.35rem 0.75rem; font-size:0.78rem;" onclick="confirmCounterPayment('${p.id}', '${p.method}')">✓ Approve</button>
-            <button class="btn btn-danger" style="padding:0.35rem 0.75rem; font-size:0.78rem;" onclick="declineCounterPayment('${p.id}', '${p.method}')">✕ Decline</button>
+            <button class="btn btn-success" style="padding:0.35rem 0.75rem; font-size:0.78rem;" onclick="confirmCounterPayment(${jsAttr(p.id)}, ${jsAttr(p.method)})">✓ Approve</button>
+            <button class="btn btn-danger" style="padding:0.35rem 0.75rem; font-size:0.78rem;" onclick="declineCounterPayment(${jsAttr(p.id)}, ${jsAttr(p.method)})">✕ Decline</button>
           </div>
         </td>
       </tr>
@@ -4095,14 +4101,14 @@
         }
         tbody.innerHTML = orders.map(o => `
         <tr>
-          <td><strong>Order #${o.orderId}</strong></td>
+          <td><strong>Order #${escapeHtml(o.orderId)}</strong></td>
           <td><code style="font-size:0.75rem;">${o.paymentId.substring(0, 16)}...</code></td>
           <td><strong style="color:#34d399; font-size:1.15rem;">₹${(Number(o.amountPaise) / 100).toFixed(2)}</strong></td>
           <td>${escapeHtml(o.customerName || 'Customer')}</td>
           <td>${escapeHtml(o.customerPhone || '-')}</td>
           <td>${new Date(o.placedAt).toLocaleTimeString()}</td>
           <td>
-            <a href="${API_BASE}/api/v1/orders/${o.orderId}/cod" target="_blank" class="btn btn-secondary" style="padding:0.25rem 0.5rem; font-size:0.75rem; text-decoration:none;">
+            <a href="${API_BASE}/api/v1/orders/${escapeHtml(encodeURIComponent(o.orderId))}/cod" target="_blank" class="btn btn-secondary" style="padding:0.25rem 0.5rem; font-size:0.75rem; text-decoration:none;">
               API ↗
             </a>
           </td>
@@ -4124,23 +4130,23 @@
           if (p.status === 'SUCCESS') {
             const tag = p.verificationTag || (p.verificationLevel >= 2 ? 'Dual Verification' : 'Single Verification');
             if (p.verificationLevel >= 2) {
-              verifyBadge = `<span class="badge badge-success">✓✓ ${tag}</span>`;
+              verifyBadge = `<span class="badge badge-success">✓✓ ${escapeHtml(tag)}</span>`;
             } else {
-              verifyBadge = `<span class="badge badge-info">✓ ${tag}</span>`;
+              verifyBadge = `<span class="badge badge-info">✓ ${escapeHtml(tag)}</span>`;
             }
           }
 
           const sourcesChips = (p.verificationSources && p.verificationSources.length > 0)
-            ? p.verificationSources.map(s => `<code style="font-size:0.7rem; background:#0f172a; padding:0.15rem 0.35rem; border-radius:0.25rem; margin-right:0.2rem; border:1px solid var(--border); color:#93c5fd;">${s === 'GOOGLE_MESSAGES' ? 'SMS' : s}</code>`).join('')
+            ? p.verificationSources.map(s => `<code style="font-size:0.7rem; background:#0f172a; padding:0.15rem 0.35rem; border-radius:0.25rem; margin-right:0.2rem; border:1px solid var(--border); color:#93c5fd;">${s === 'GOOGLE_MESSAGES' ? 'SMS' : escapeHtml(s)}</code>`).join('')
             : '<span style="color:var(--text-muted); font-size:0.75rem;">-</span>';
 
           return `
           <tr>
-            <td><strong>Order #${p.orderId}</strong></td>
-            <td><code>${p.id}</code></td>
+            <td><strong>Order #${escapeHtml(p.orderId)}</strong></td>
+            <td><code>${escapeHtml(p.id)}</code></td>
             <td>₹${(Number(p.amountPaise) / 100).toFixed(2)}</td>
-            <td>${p.method}</td>
-            <td><span class="badge ${p.status === 'SUCCESS' ? 'badge-success' : (p.status === 'ACTIVE' ? 'badge-info' : 'badge-danger')}">${p.status}</span></td>
+            <td>${escapeHtml(p.method)}</td>
+            <td><span class="badge ${p.status === 'SUCCESS' ? 'badge-success' : (p.status === 'ACTIVE' ? 'badge-info' : 'badge-danger')}">${escapeHtml(p.status)}</span></td>
             <td>${verifyBadge}</td>
             <td>${sourcesChips}</td>
             <td>${new Date(p.createdAt).toLocaleTimeString()}</td>
@@ -4398,16 +4404,16 @@
 
         let actionBtns = '';
         if (!a.isActive) {
-          actionBtns += `<button class="btn btn-primary" style="padding:0.35rem 0.65rem; font-size:0.78rem; margin-right:0.4rem;" onclick="activateVpa('${a.id}')">Activate</button>`;
+          actionBtns += `<button class="btn btn-primary" style="padding:0.35rem 0.65rem; font-size:0.78rem; margin-right:0.4rem;" onclick="activateVpa(${jsAttr(a.id)})">Activate</button>`;
         } else {
-          actionBtns += `<button class="btn btn-secondary" style="padding:0.35rem 0.65rem; font-size:0.78rem; margin-right:0.4rem;" onclick="toggleVpa('${a.id}')">Deactivate</button>`;
+          actionBtns += `<button class="btn btn-secondary" style="padding:0.35rem 0.65rem; font-size:0.78rem; margin-right:0.4rem;" onclick="toggleVpa(${jsAttr(a.id)})">Deactivate</button>`;
         }
-        actionBtns += `<button class="btn btn-danger" style="padding:0.35rem 0.65rem; font-size:0.78rem;" onclick="deleteVpa('${a.id}', '${a.upiId}')">Delete</button>`;
+        actionBtns += `<button class="btn btn-danger" style="padding:0.35rem 0.65rem; font-size:0.78rem;" onclick="deleteVpa(${jsAttr(a.id)}, ${jsAttr(a.upiId)})">Delete</button>`;
 
         return `
         <tr style="${a.isActive ? 'background:var(--primary-light);' : ''}">
-          <td><strong style="color:var(--text-heading);">${a.upiId}</strong></td>
-          <td>${a.payeeName}</td>
+          <td><strong style="color:var(--text-heading);">${escapeHtml(a.upiId)}</strong></td>
+          <td>${escapeHtml(a.payeeName)}</td>
           <td>${statusBadge}</td>
           <td>${slotBadge}</td>
           <td style="font-size:0.75rem; color:var(--text-muted);">${new Date(a.createdAt).toLocaleDateString()}</td>
@@ -4697,8 +4703,8 @@
           </div>
         </div>
         <div style="display:flex; gap:0.5rem;">
-          <button class="btn btn-secondary" style="font-size:0.75rem;" onclick="copyText('${escapeHtml(r.hostname || '')}', 'Hostname copied to clipboard!')" ${!r.hostname ? 'disabled' : ''}>📋 Copy Hostname</button>
-          <button class="btn btn-secondary" style="font-size:0.75rem;" onclick="copyText('${escapeHtml(r.serviceUrl)}', 'Service URL copied to clipboard!')">📋 Copy Service URL</button>
+          <button class="btn btn-secondary" style="font-size:0.75rem;" onclick="copyText(${jsAttr(r.hostname || '')}, 'Hostname copied to clipboard!')" ${!r.hostname ? 'disabled' : ''}>📋 Copy Hostname</button>
+          <button class="btn btn-secondary" style="font-size:0.75rem;" onclick="copyText(${jsAttr(r.serviceUrl)}, 'Service URL copied to clipboard!')">📋 Copy Service URL</button>
         </div>
       </div>
     `).join('');
@@ -4934,7 +4940,7 @@
           <td><code style="font-size:0.75rem; color:#38bdf8;">${escapeHtml(id)}</code></td>
           <td><span style="font-size:0.75rem; color:var(--text-muted);">${timeStr}</span></td>
           <td>
-            <button class="btn btn-danger" style="padding:0.25rem 0.6rem; font-size:0.72rem;" onclick="unpairSmsDevice('${escapeHtml(id)}')">Unpair</button>
+            <button class="btn btn-danger" style="padding:0.25rem 0.6rem; font-size:0.72rem;" onclick="unpairSmsDevice(${jsAttr(id)})">Unpair</button>
           </td>
         </tr>
       `;
@@ -5313,7 +5319,7 @@
           if (badge) { badge.className = 'badge badge-success'; badge.innerText = 'CONNECTED'; }
           if (dot) dot.style.color = '#10b981';
           if (title) title.innerText = 'WhatsApp Connected & Active';
-          if (phoneDisplay) phoneDisplay.innerHTML = `Linked Phone: <strong style="color:#34d399;">${data.phoneNumber || 'Linked Device'}</strong>`;
+          if (phoneDisplay) phoneDisplay.innerHTML = `Linked Phone: <strong style="color:#34d399;">${escapeHtml(data.phoneNumber || 'Linked Device')}</strong>`;
           if (qrBox) qrBox.style.display = 'none';
           if (btnDisconnect) btnDisconnect.style.display = 'inline-block';
           if (btnConnect) btnConnect.innerText = '🔄 Re-Pair Device';
@@ -5483,9 +5489,9 @@
         const isCash = p.method === 'CASH_COUNTER';
         const methodLabel = isCash ? '💵 Cash at Till' : '💳 Card at Counter';
         const badgeClass = isCash ? 'cashier-badge-cash' : 'cashier-badge-card';
-        const orderIdStr = p.orderId ? (String(p.orderId).startsWith('#') ? p.orderId : `#${p.orderId}`) : `#${p.id.slice(0, 8)}`;
-        const amountStr = `₹${p.amount}`;
-        const customerText = p.customer && p.customer.name ? `${p.customer.name}` : 'Customer at Till';
+        const orderIdStr = p.orderId ? (String(p.orderId).startsWith('#') ? escapeHtml(p.orderId) : `#${escapeHtml(p.orderId)}`) : `#${escapeHtml(String(p.id).slice(0, 8))}`;
+        const amountStr = `₹${escapeHtml(p.amount)}`;
+        const customerText = p.customer && p.customer.name ? `${escapeHtml(p.customer.name)}` : 'Customer at Till';
 
         if (isMinimized) {
           return `
@@ -5497,8 +5503,8 @@
                 <span style="color:#f59e0b; font-size:12px; font-weight:700;">${amountStr}</span>
               </div>
               <div style="display:flex; align-items:center; gap:4px;">
-                <button type="button" class="cashier-btn-minimize" onclick="toggleMinimizeCard('${p.id}')">▲</button>
-                <button type="button" class="cashier-btn-accept" style="padding:4px 8px; font-size:11px;" onclick="confirmCounterPayment('${p.id}', '${p.method}')">✓ Accept</button>
+                <button type="button" class="cashier-btn-minimize" onclick="toggleMinimizeCard(${jsAttr(p.id)})">▲</button>
+                <button type="button" class="cashier-btn-accept" style="padding:4px 8px; font-size:11px;" onclick="confirmCounterPayment(${jsAttr(p.id)}, ${jsAttr(p.method)})">✓ Accept</button>
               </div>
             </div>
           </div>
@@ -5512,7 +5518,7 @@
               <span class="cashier-modal-badge ${badgeClass}">${methodLabel}</span>
               <strong style="color:#ffffff; font-size:13px; font-family:monospace;">${orderIdStr}</strong>
             </div>
-            <button type="button" class="cashier-btn-minimize" onclick="toggleMinimizeCard('${p.id}')">—</button>
+            <button type="button" class="cashier-btn-minimize" onclick="toggleMinimizeCard(${jsAttr(p.id)})">—</button>
           </div>
           <div class="cashier-modal-body">
             <div class="cashier-modal-amount-row">
@@ -5526,8 +5532,8 @@
               </div>
             </div>
             <div class="cashier-modal-actions">
-              <button type="button" class="cashier-btn-accept" onclick="confirmCounterPayment('${p.id}', '${p.method}')">✓ Confirm &amp; Accept</button>
-              <button type="button" class="cashier-btn-decline" onclick="declineCounterPayment('${p.id}', '${p.method}')">✕ Decline</button>
+              <button type="button" class="cashier-btn-accept" onclick="confirmCounterPayment(${jsAttr(p.id)}, ${jsAttr(p.method)})">✓ Confirm &amp; Accept</button>
+              <button type="button" class="cashier-btn-decline" onclick="declineCounterPayment(${jsAttr(p.id)}, ${jsAttr(p.method)})">✕ Decline</button>
             </div>
           </div>
         </div>
@@ -5986,11 +5992,11 @@
 
           if (st.status === 'LOADED' || st.status === 'PASSED' || st.status === 'PARSED' || st.status === 'VERIFIED' || st.status === 'ATTRIBUTED') {
             statusColor = '#34d399';
-            statusBadge = st.status;
+            statusBadge = escapeHtml(st.status);
             bg = 'rgba(6,95,70,0.15)';
           } else if (st.status === 'FAILED') {
             statusColor = '#f87171';
-            statusBadge = (def.key === 'stage5' && st.autoBanApplied) ? 'FAILED (CUSTOMER BANNED)' : `FAILED (${st.reason || 'REJECTED'})`;
+            statusBadge = (def.key === 'stage5' && st.autoBanApplied) ? 'FAILED (CUSTOMER BANNED)' : `FAILED (${escapeHtml(st.reason || 'REJECTED')})`;
             bg = 'rgba(153,27,27,0.2)';
           } else if (st.status === 'SUSPICIOUS_FLAGGED' || st.status === 'FLAGGED_SUSPICIOUS') {
             statusColor = '#fbbf24';
@@ -6003,7 +6009,7 @@
           return `
           <div style="background:${bg}; border:1px solid #334155; border-radius:6px; padding:0.6rem 0.85rem; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem;">
             <div>
-              <strong style="color:#ffffff; font-size:0.83rem;">${def.title}</strong>
+              <strong style="color:#ffffff; font-size:0.83rem;">${escapeHtml(def.title)}</strong>
               ${detailsText ? `<div style="font-size:0.75rem; color:#cbd5e1; margin-top:0.2rem; font-family:monospace;">${escapeHtml(detailsText)}</div>` : ''}
             </div>
             <span style="font-weight:700; font-size:0.75rem; color:${statusColor};">${statusBadge}</span>
@@ -6160,7 +6166,7 @@
         }
 
         select.innerHTML = simCustomersCache.map(c => {
-          return `<option value="${c.id}">${escapeHtml(c.name)} (${escapeHtml(c.phone || c.email)})</option>`;
+          return `<option value="${escapeHtml(c.id)}">${escapeHtml(c.name)} (${escapeHtml(c.phone || c.email)})</option>`;
         }).join('');
 
         // If already selected, re-select
@@ -6240,10 +6246,10 @@
           else if (s.status === 'CANCELLED' || s.status === 'EXPIRED' || s.status === 'FAILED') { badgeColor = '#ffffff'; badgeBg = '#ef4444'; }
 
           return `
-          <div class="sim-session-row" onclick="simPickSession('${s.id}')" style="cursor:pointer; display:flex; justify-content:space-between; align-items:center; padding:0.5rem 0.65rem; border-radius:6px; margin-bottom:0.35rem; background:#0f172a; border:1px solid #1e293b; transition:all 0.15s ease;" id="simSessItem_${s.id}">
+          <div class="sim-session-row" onclick="simPickSession(${jsAttr(s.id)})" style="cursor:pointer; display:flex; justify-content:space-between; align-items:center; padding:0.5rem 0.65rem; border-radius:6px; margin-bottom:0.35rem; background:#0f172a; border:1px solid #1e293b; transition:all 0.15s ease;" id="simSessItem_${escapeHtml(s.id)}">
             <div>
               <div style="display:flex; align-items:center; gap:0.4rem;">
-                <input type="radio" name="simSessionRadio" id="radio_${s.id}" style="accent-color:#3b82f6; cursor:pointer;" />
+                <input type="radio" name="simSessionRadio" id="radio_${escapeHtml(s.id)}" style="accent-color:#3b82f6; cursor:pointer;" />
                 <strong style="color:#f8fafc; font-size:0.84rem; font-family:monospace;">${escapeHtml(s.id.slice(0, 14))}...</strong>
                 <span style="color:#94a3b8; font-size:0.78rem;">#${escapeHtml(s.orderId)}</span>
               </div>
@@ -6626,7 +6632,7 @@
 
         return `
         <tr style="border-bottom:1px solid #1e293b;">
-          <td><strong style="color:#ffffff;">${escapeHtml(u.name || 'Anonymous')}</strong><div style="font-size:0.72rem; color:#64748b; font-family:monospace;">${u.id}</div></td>
+          <td><strong style="color:#ffffff;">${escapeHtml(u.name || 'Anonymous')}</strong><div style="font-size:0.72rem; color:#64748b; font-family:monospace;">${escapeHtml(u.id)}</div></td>
           <td style="color:#cbd5e1; font-size:0.83rem;">${escapeHtml(u.email || '-')}</td>
           <td style="color:#38bdf8; font-family:monospace; font-size:0.83rem;">${escapeHtml(u.phone || u.mobileNumber || '-')}</td>
           <td><span class="badge badge-danger" style="font-weight:800; font-size:0.75rem; letter-spacing:0.04em;">BANNED</span></td>
@@ -6637,8 +6643,8 @@
           <td><span class="badge badge-info" style="font-size:0.7rem;">${escapeHtml(u.source || 'SMS')}</span></td>
           <td style="text-align:right;">
             <div style="display:inline-flex; gap:0.4rem;">
-              <button class="btn btn-secondary" style="padding:0.3rem 0.6rem; font-size:0.75rem;" onclick="viewBanDetails('${u.id}')">🔍 Details</button>
-              <button class="btn btn-success" style="padding:0.3rem 0.6rem; font-size:0.75rem; background:#059669; border-color:#059669;" onclick="promptUnbanCustomer('${u.id}', '${escapeHtml(u.name || '')}', '${escapeHtml(u.phone || u.mobileNumber || '')}')">🔓 Unban</button>
+              <button class="btn btn-secondary" style="padding:0.3rem 0.6rem; font-size:0.75rem;" onclick="viewBanDetails(${jsAttr(u.id)})">🔍 Details</button>
+              <button class="btn btn-success" style="padding:0.3rem 0.6rem; font-size:0.75rem; background:#059669; border-color:#059669;" onclick="promptUnbanCustomer(${jsAttr(u.id)}, ${jsAttr(u.name || '')}, ${jsAttr(u.phone || u.mobileNumber || '')})">🔓 Unban</button>
             </div>
           </td>
         </tr>
@@ -6692,10 +6698,10 @@
               <span style="color:#64748b;">Name:</span><strong style="color:#ffffff;">${escapeHtml(c.name || '-')}</strong>
               <span style="color:#64748b;">Phone:</span><span style="color:#38bdf8; font-family:monospace;">${escapeHtml(c.phone || '-')}</span>
               <span style="color:#64748b;">Email:</span><span style="color:#cbd5e1;">${escapeHtml(c.email || '-')}</span>
-              <span style="color:#64748b;">Customer ID:</span><code style="color:#94a3b8; font-size:0.72rem;">${c.id || '-'}</code>
+              <span style="color:#64748b;">Customer ID:</span><code style="color:#94a3b8; font-size:0.72rem;">${escapeHtml(c.id || '-')}</code>
               <span style="color:#64748b;">Created At:</span><span style="color:#cbd5e1;">${c.createdAt ? new Date(c.createdAt).toLocaleString() : '-'}</span>
-              <span style="color:#64748b;">Total Orders:</span><strong style="color:#ffffff;">${c.totalOrders || 0}</strong>
-              <span style="color:#64748b;">Total Spent:</span><strong style="color:#34d399;">₹${c.totalSpentRupees || '0.00'}</strong>
+              <span style="color:#64748b;">Total Orders:</span><strong style="color:#ffffff;">${escapeHtml(c.totalOrders || 0)}</strong>
+              <span style="color:#64748b;">Total Spent:</span><strong style="color:#34d399;">₹${escapeHtml(c.totalSpentRupees || '0.00')}</strong>
             </div>
           </div>
 
@@ -6706,9 +6712,9 @@
               <span style="color:#64748b;">Ban Type:</span><span class="badge ${b.banType === 'AUTOMATIC' ? 'badge-danger' : 'badge-warning'}">${escapeHtml(b.banType)}</span>
               <span style="color:#64748b;">Trigger Event:</span><strong style="color:#f87171;">${escapeHtml(b.triggerEvent)}</strong>
               <span style="color:#64748b;">Timestamp:</span><span style="color:#cbd5e1;">${b.triggerTimestamp ? new Date(b.triggerTimestamp).toLocaleString() : '-'}</span>
-              <span style="color:#64748b;">Session ID:</span><code style="color:#94a3b8; font-size:0.72rem;">${b.paymentSessionId || '-'}</code>
+              <span style="color:#64748b;">Session ID:</span><code style="color:#94a3b8; font-size:0.72rem;">${escapeHtml(b.paymentSessionId || '-')}</code>
               <span style="color:#64748b;">Order ID:</span><strong style="color:#ffffff;">#${escapeHtml(b.orderId || '-')}</strong>
-              <span style="color:#64748b;">Session Amount:</span><strong style="color:#38bdf8;">₹${b.sessionAmountRupees || '-'}</strong>
+              <span style="color:#64748b;">Session Amount:</span><strong style="color:#38bdf8;">₹${escapeHtml(b.sessionAmountRupees || '-')}</strong>
             </div>
           </div>
         </div>
@@ -6974,7 +6980,7 @@
             <td style="color:#f87171; font-size:0.8rem;">${escapeHtml(e.fraudReason || '-')}</td>
             <td><code style="color:#fca5a5; font-size:0.75rem; background:#020617; padding:2px 6px; border-radius:4px;">${escapeHtml(rawSnippet)}</code></td>
             <td style="text-align:right;">
-              ${e.customerId ? `<button class="btn btn-secondary" style="padding:0.25rem 0.5rem; font-size:0.75rem;" onclick="viewBanDetails('${e.customerId}')">View Dossier</button>` : '-'}
+              ${e.customerId ? `<button class="btn btn-secondary" style="padding:0.25rem 0.5rem; font-size:0.75rem;" onclick="viewBanDetails(${jsAttr(e.customerId)})">View Dossier</button>` : '-'}
             </td>
           </tr>
         `;

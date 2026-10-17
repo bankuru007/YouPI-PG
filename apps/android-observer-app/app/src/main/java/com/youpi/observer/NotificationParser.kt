@@ -42,14 +42,14 @@ object NotificationParser {
         "com.csam.icici.bank.imobile",
         "com.sbi.upi",
         "com.axis.mobile",
-        "com.msf.kbank.mobile"
+        "com.msf.kbank.mobile",
+        "com.dreamplug.androidapp",
+        "com.sbi.lotusintouch"
     )
 
-    fun isRelevantPackage(pkg: String): Boolean {
-        if (BANKING_PACKAGES.contains(pkg)) return true
-        val lower = pkg.toLowerCase()
-        return lower.contains("upi") || lower.contains("bank") || lower.contains("pay")
-    }
+    // SECURITY: exact allowlist only. Substring matching ("pay", "bank") could let other
+    // apps' notifications be reported as payments.
+    fun isRelevantPackage(pkg: String): Boolean = BANKING_PACKAGES.contains(pkg)
 
     fun parse(
         packageName: String,

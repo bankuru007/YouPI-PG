@@ -1,5 +1,68 @@
 import { HttpServer } from '../server.js';
-import { toPaise, toRupeesString, resolveRuntimeUrls, PaymentStatus } from '@youpi/common';
+import { toPaise, toRupeesString, resolveRuntimeUrls, PaymentStatus, PaymentMethod } from '@youpi/common';
+import { isAdminRequest, getAuthenticatedCustomer } from '../security/access-guard.js';
+import { enforce, clientIp } from '../security/rate-limit.js';
+
+// ---------------------------------------------------------------------------
+// Input validation for public payment creation. These values are shown in the
+// admin panel and checkout page, so they are restricted to safe characters.
+// ---------------------------------------------------------------------------
+const ORDER_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:\/#@-]{0,63}$/;
+const ALLOWED_METHODS = new Set(Object.values(PaymentMethod));
+const MAX_METADATA_BYTES = 8 * 1024;
+
+function maxPaymentPaise() {
+  const rupees = Number(process.env.MAX_PAYMENT_AMOUNT_RUPEES || 200000);
+  return BigInt(Math.max(1, Math.floor(Number.isFinite(rupees) ? rupees : 200000))) * 100n;
+}
+
+function cleanText(value, maxLen = 100) {
+  if (value === undefined || value === null) return value;
+  return String(value).replace(/[\u0000-\u001f\u007f<>]/g, '').trim().slice(0, maxLen);
+}
+
+function isSafeHttpUrl(value) {
+  if (typeof value !== 'string' || value.length > 2048) return false;
+  try {
+    const u = new URL(value);
+    return u.protocol === 'https:' || u.protocol === 'http:';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Validates and normalizes POST /api/v1/payments input in place.
+ * @returns {string|null} error message, or null when valid
+ */
+function validatePaymentInput(body) {
+  if (typeof body.orderId === 'number') body.orderId = String(body.orderId);
+  if (typeof body.orderId !== 'string' || !ORDER_ID_RE.test(body.orderId)) {
+    return 'orderId must be 1-64 characters: letters, digits and . _ : / # @ -';
+  }
+  if (body.method !== undefined && body.method !== null && body.method !== '' && !ALLOWED_METHODS.has(body.method)) {
+    return `method must be one of: ${[...ALLOWED_METHODS].join(', ')}`;
+  }
+  if (body.currency !== undefined && body.currency !== null && body.currency !== 'INR') {
+    return 'Only INR is supported.';
+  }
+  if (body.returnUrl !== undefined && body.returnUrl !== null && body.returnUrl !== '' && !isSafeHttpUrl(body.returnUrl)) {
+    return 'returnUrl must be an http(s) URL.';
+  }
+  if (body.metadata !== undefined && body.metadata !== null) {
+    if (typeof body.metadata !== 'object' || Array.isArray(body.metadata)) return 'metadata must be an object.';
+    if (Buffer.byteLength(JSON.stringify(body.metadata), 'utf8') > MAX_METADATA_BYTES) return 'metadata is too large (max 8 KB).';
+  }
+  for (const key of ['customerName', 'customerPhone', 'customerEmail']) {
+    if (body[key] !== undefined) body[key] = cleanText(body[key]);
+  }
+  if (body.customer && typeof body.customer === 'object') {
+    for (const key of Object.keys(body.customer)) {
+      if (typeof body.customer[key] === 'string') body.customer[key] = cleanText(body.customer[key]);
+    }
+  }
+  return null;
+}
 import { isTerminalStatus, toPublicOutcome } from '@youpi/core';
 
 /**
@@ -28,6 +91,9 @@ export function registerPaymentRoutes(server, ctx) {
 
   // POST /api/v1/payments
   server.post('/api/v1/payments', async (req, res) => {
+    const callerIsAdmin = isAdminRequest(req);
+    if (!callerIsAdmin && enforce(res, [{ key: `create-payment:ip:${clientIp(req)}`, limit: Number(process.env.CREATE_PAYMENT_RATE_LIMIT_PER_MIN || 60), windowMs: 60 * 1000 }])) return;
+
     const body = await HttpServer.parseBody(req);
     const idempotencyKey = req.headers['idempotency-key'] || body.idempotencyKey;
 
@@ -47,6 +113,12 @@ export function registerPaymentRoutes(server, ctx) {
 
     if (!body.orderId || !body.amount) {
       HttpServer.json(res, 400, { error: 'Missing required fields: orderId and amount.' });
+      return;
+    }
+
+    const validationError = validatePaymentInput(body);
+    if (validationError) {
+      HttpServer.json(res, 400, { error: validationError });
       return;
     }
 
@@ -139,6 +211,10 @@ export function registerPaymentRoutes(server, ctx) {
       HttpServer.json(res, 400, { error: err.message });
       return;
     }
+    if (amountPaise > maxPaymentPaise()) {
+      HttpServer.json(res, 400, { error: 'Amount exceeds the maximum allowed per payment.' });
+      return;
+    }
 
     const isCounterPayment = body.method === 'CASH_COUNTER' || body.method === 'CARD_COUNTER';
 
@@ -151,6 +227,11 @@ export function registerPaymentRoutes(server, ctx) {
         HttpServer.json(res, 500, { error: 'No active UPI receiving account configured for merchant.' });
         return;
       }
+      // Never collect real money into the seeded placeholder VPA.
+      if (process.env.NODE_ENV === 'production' && receivingAccount.upiId === 'merchant@upi') {
+        HttpServer.json(res, 503, { error: 'UPI receiving account is not configured. Set your own UPI ID in the merchant admin panel.' });
+        return;
+      }
       receivingAccountId = receivingAccount.id;
       receivingAccountSnapshot = {
         id: receivingAccount.id,
@@ -160,14 +241,23 @@ export function registerPaymentRoutes(server, ctx) {
       };
     }
 
-    // Resolve customer if provided (optional pre-existing customer)
-    let customerId = body.customerId || null;
-    if (!customerId && (body.customer?.mobileNumber || body.customer?.phoneNumber || body.customer?.email) && ctx.customerRepo) {
-      const ident = body.customer.email || body.customer.mobileNumber || body.customer.phoneNumber;
-      const existingCust = ctx.customerRepo.findByIdentifier(ident);
-      if (existingCust) {
-        customerId = existingCust.id;
+    // Resolve customer (optional). SECURITY: a public caller cannot attach a payment to someone
+    // else's account; only the customer's own session token or an admin may set the customer.
+    let customerId = null;
+    if (callerIsAdmin) {
+      customerId = body.customerId || null;
+      if (!customerId && (body.customer?.mobileNumber || body.customer?.phoneNumber || body.customer?.email) && ctx.customerRepo) {
+        const ident = body.customer.email || body.customer.mobileNumber || body.customer.phoneNumber;
+        const existingCust = ctx.customerRepo.findByIdentifier(ident);
+        if (existingCust) customerId = existingCust.id;
       }
+    } else {
+      const tokenCustomer = getAuthenticatedCustomer(req, body, ctx);
+      if (body.customerId && (!tokenCustomer || tokenCustomer.id !== body.customerId)) {
+        HttpServer.json(res, 403, { error: 'customerId does not match the authenticated customer.' });
+        return;
+      }
+      customerId = tokenCustomer ? tokenCustomer.id : null;
     }
 
     // Server-side Ban Enforcement (Section 3)
@@ -208,7 +298,8 @@ export function registerPaymentRoutes(server, ctx) {
     // Digital UPI payments MUST ALWAYS start in status INITIATED without acquiring a concurrency slot or timer.
     // Only physical counter payments (CASH_COUNTER, CARD_COUNTER) start as ACTIVE (they do not use UPI slots).
     // The only exception for UPI auto-activation is explicit developer test suite flag: body.autoActivate === true.
-    const isExplicitTestAutoActivate = body.autoActivate === true || body.autoActivate === 'true';
+    // SECURITY: auto-activation skips the customer login step, so only an admin caller may use it.
+    const isExplicitTestAutoActivate = callerIsAdmin && (body.autoActivate === true || body.autoActivate === 'true');
     const shouldActivateNow = isCounterPayment || isExplicitTestAutoActivate;
     const initialStatus = isCounterPayment ? PaymentStatus.ACTIVE : PaymentStatus.INITIATED;
 

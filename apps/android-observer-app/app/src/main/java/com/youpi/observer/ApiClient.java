@@ -90,12 +90,13 @@ public class ApiClient {
         String endpoint = baseUrl + "/api/v1/observers/sms";
 
         try {
-            String tsStr = String.valueOf(timestamp > 0 ? timestamp : System.currentTimeMillis());
+            // The signature timestamp is "now" (the server rejects >60s drift); the SMS time travels in the body.
+            String tsStr = String.valueOf(System.currentTimeMillis());
             JSONObject json = new JSONObject();
             json.put("deviceId", deviceId);
             json.put("sender", sender != null ? sender : "UNKNOWN");
             json.put("body", body != null ? body : "");
-            json.put("timestamp", Long.parseLong(tsStr));
+            json.put("timestamp", timestamp > 0 ? timestamp : System.currentTimeMillis());
 
             String bodyString = json.toString();
             String sigPayload = bodyString + ":" + tsStr;

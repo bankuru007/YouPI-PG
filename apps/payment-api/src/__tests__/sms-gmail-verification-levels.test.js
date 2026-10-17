@@ -244,11 +244,30 @@ describe('2-Level Verification (SMS Gateway + Gmail) & Queue Management Tests', 
     assert.equal(testRes.status, 200);
   });
 
-  test('Downloads standalone Android APK binary from Payment API', async () => {
-    const res = await fetch(`${baseUrl}/api/v1/admin/sms-gateway/download-apk`);
-    assert.equal(res.status, 200);
-    assert.equal(res.headers.get('content-type'), 'application/vnd.android.package-archive');
-    const buf = await res.arrayBuffer();
-    assert.ok(buf.byteLength > 0);
+  test('Serves only an APK built from source, and explains how to build it otherwise', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const { fileURLToPath } = await import('node:url');
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const apkPath = path.resolve(here, '../../../android-observer-app/app/build/outputs/apk/release/youpi-sms-gateway.apk');
+    const existed = fs.existsSync(apkPath);
+
+    if (!existed) {
+      const missing = await fetch(`${baseUrl}/api/v1/admin/sms-gateway/download-apk`);
+      assert.equal(missing.status, 404);
+      const body = await missing.json();
+      assert.ok(body.error.includes('build-android-apk'));
+      fs.mkdirSync(path.dirname(apkPath), { recursive: true });
+      fs.writeFileSync(apkPath, Buffer.from('PK\x03\x04test-apk'));
+    }
+    try {
+      const res = await fetch(`${baseUrl}/api/v1/admin/sms-gateway/download-apk`);
+      assert.equal(res.status, 200);
+      assert.equal(res.headers.get('content-type'), 'application/vnd.android.package-archive');
+      const buf = await res.arrayBuffer();
+      assert.ok(buf.byteLength > 0);
+    } finally {
+      if (!existed) fs.rmSync(apkPath, { force: true });
+    }
   });
 });

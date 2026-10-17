@@ -1771,6 +1771,7 @@ app.post('/api/youpi-webhook', express.raw({ type: 'application/json' }), (req, 
         });
 
         const data = await res.json();
+        if (data && data.paymentId) window.__lastPaymentId = data.paymentId;
         if (!res.ok || !data.checkoutUrl) {
           alert(data.error || 'Failed to initiate checkout session.');
           btn.disabled = false;
@@ -1815,11 +1816,10 @@ app.post('/api/youpi-webhook', express.raw({ type: 'application/json' }), (req, 
       fetch('/api/verify-payment', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        // The server re-checks this payment with the gateway before crediting anything.
         body: JSON.stringify({
           orderId: res.order_id,
-          amount: res.amount_received || currentAmount,
-          coins: Math.round(res.amount_received || currentAmount),
-          paymentId: res.utr || res.order_id
+          paymentId: (res.raw && res.raw.paymentId) || window.__lastPaymentId
         })
       }).then(r => r.json()).then(d => {
         if (d.coins !== undefined) {
