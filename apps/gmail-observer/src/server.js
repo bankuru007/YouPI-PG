@@ -1,3 +1,4 @@
+import { observerAuthHeaders, resolveGmailRedirectUri } from '@youpi/common';
 import http from 'node:http';
 import { GmailPoller } from './gmail-poller.js';
 import { GmailBrowserAutomator } from './browser-automator.js';
@@ -55,9 +56,9 @@ export class GmailObserverServer {
       // GET /oauth/url
       if (pathname === '/oauth/url') {
         let clientId = '';
-        const apiBase = (this.poller.apiBaseUrl && !this.poller.apiBaseUrl.includes('gauravtesting.online')) ? this.poller.apiBaseUrl : `http://127.0.0.1:${process.env.PAYMENT_API_PORT || 6100}`;
+        const apiBase = (this.poller.apiBaseUrl && true) ? this.poller.apiBaseUrl : `http://127.0.0.1:${process.env.PAYMENT_API_PORT || 6100}`;
         try {
-          const credRes = await fetch(`${apiBase}/api/v1/admin/gmail/credentials`);
+          const credRes = await fetch(`${apiBase}/api/v1/admin/gmail/credentials`, { headers: observerAuthHeaders() });
           if (credRes.ok) {
             const credData = await credRes.json();
             clientId = credData.clientId || credData.gmailConfig?.clientId || '';
@@ -70,7 +71,7 @@ export class GmailObserverServer {
             : (process.env.GMAIL_CLIENT_ID || 'mock-youpi-client-id.apps.googleusercontent.com');
         }
 
-        const finalRedirectUri = 'https://pay-gmail.gauravtesting.online/oauth/callback';
+        const finalRedirectUri = resolveGmailRedirectUri();
         const scope = encodeURIComponent('https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/userinfo.email');
         const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(finalRedirectUri)}&response_type=code&scope=${scope}&access_type=offline&prompt=consent&include_granted_scopes=true`;
 
@@ -102,10 +103,10 @@ export class GmailObserverServer {
         try {
           let clientId = '';
           let clientSecret = '';
-          const apiBase = (this.poller.apiBaseUrl && !this.poller.apiBaseUrl.includes('gauravtesting.online')) ? this.poller.apiBaseUrl : `http://127.0.0.1:${process.env.PAYMENT_API_PORT || 6100}`;
+          const apiBase = (this.poller.apiBaseUrl && true) ? this.poller.apiBaseUrl : `http://127.0.0.1:${process.env.PAYMENT_API_PORT || 6100}`;
 
           try {
-            const credRes = await fetch(`${apiBase}/api/v1/admin/gmail/credentials`);
+            const credRes = await fetch(`${apiBase}/api/v1/admin/gmail/credentials`, { headers: observerAuthHeaders() });
             if (credRes.ok) {
               const credData = await credRes.json();
               clientId = credData.clientId || credData.gmailConfig?.clientId || '';
@@ -133,7 +134,7 @@ export class GmailObserverServer {
             return;
           }
 
-          const redirectUri = 'https://pay-gmail.gauravtesting.online/oauth/callback';
+          const redirectUri = resolveGmailRedirectUri();
           console.log(`[Gmail Observer] Exchanging OAuth code for tokens with Client ID: ${clientId.substring(0, 15)}... and Redirect URI: ${redirectUri}`);
 
           const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
@@ -183,7 +184,7 @@ export class GmailObserverServer {
           try {
             await fetch(`${apiBase}/api/v1/admin/gmail/credentials`, {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: { 'Content-Type': 'application/json', ...observerAuthHeaders() },
               body: JSON.stringify({
                 clientId,
                 clientSecret,

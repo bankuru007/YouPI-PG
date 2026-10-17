@@ -1,3 +1,4 @@
+import { observerAuthHeaders } from '@youpi/common';
 import { PaymentObserverClient } from '@youpi/observer-sdk';
 import { BankEmailParser } from './parser.js';
 
@@ -68,7 +69,7 @@ export class GmailPoller {
 
   async fetchCredentialsFromPaymentApi() {
     try {
-      const res = await fetch(`${this.apiBaseUrl}/api/v1/admin/gmail/credentials`);
+      const res = await fetch(`${this.apiBaseUrl}/api/v1/admin/gmail/credentials`, { headers: observerAuthHeaders() });
       if (res.ok) {
         const data = await res.json();
         const conf = data.gmailConfig || data;
@@ -125,7 +126,7 @@ export class GmailPoller {
 
   async resolveActiveReceivingAccount() {
     try {
-      const res = await fetch(`${this.apiBaseUrl}/api/v1/pollers/active-window`, { signal: AbortSignal.timeout(1000) });
+      const res = await fetch(`${this.apiBaseUrl}/api/v1/pollers/active-window`, { signal: AbortSignal.timeout(1000), headers: observerAuthHeaders() });
       if (res.ok) {
         const data = await res.json();
         if (data.sessions && data.sessions.length > 0) {

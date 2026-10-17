@@ -1,4 +1,8 @@
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+
+// Preload that provides test-only secrets and operator credentials (see scripts/test-setup.js).
+const TEST_SETUP = fileURLToPath(new URL('./test-setup.js', import.meta.url));
 
 const testFiles = [
   'packages/common/src/__tests__/common.test.js',
@@ -30,6 +34,7 @@ const testFiles = [
   'apps/payment-api/src/__tests__/whatsapp-berry-auth.test.js',
   'apps/payment-api/src/__tests__/whitelabel-branding.test.js',
   'apps/payment-api/src/__tests__/cod-parallel-timer-decoupling.test.js',
+  'apps/payment-api/src/__tests__/security-lockdown.test.js',
   'scripts/chaos-concurrency.test.js',
   'scripts/production-infrastructure.test.js'
 ];
@@ -46,7 +51,7 @@ for (let i = 0; i < testFiles.length; i++) {
   const file = testFiles[i];
   process.stdout.write(`[${i + 1}/${testFiles.length}] Testing ${file}... `);
   const startFile = Date.now();
-  const result = spawnSync(process.execPath, ['--test', file], {
+  const result = spawnSync(process.execPath, ['--import', TEST_SETUP, '--test', file], {
     stdio: 'pipe',
     env: {
       ...process.env,

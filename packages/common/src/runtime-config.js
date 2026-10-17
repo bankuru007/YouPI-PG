@@ -230,3 +230,18 @@ export function resolvePairingUrl(options = {}) {
   const urls = resolveRuntimeUrls(options);
   return urls.apiUrl || 'http://localhost:6100';
 }
+
+/**
+ * Gmail OAuth redirect URI for this deployment.
+ * Uses GMAIL_REDIRECT_URI when set, otherwise the deployment's own Gmail observer URL.
+ * @returns {string}
+ */
+export function resolveGmailRedirectUri() {
+  const explicit = (process.env.GMAIL_REDIRECT_URI || '').trim();
+  if (explicit) return explicit;
+  try {
+    const urls = resolveRuntimeUrls();
+    if (urls?.gmailUrl) return `${String(urls.gmailUrl).replace(/\/+$/, '')}/oauth/callback`;
+  } catch {}
+  return `http://localhost:${process.env.GMAIL_OBSERVER_PORT || 6003}/oauth/callback`;
+}

@@ -3,6 +3,123 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getDatabase, MerchantRepository, SupportTicketRepository } from '@youpi/db';
+import { getStrongSecret, safeEqual, isPlaceholderSecret } from '@youpi/common';
+
+// ---------------------------------------------------------------------------
+// SECURITY: the merchant admin panel is protected with HTTP Basic auth and
+// talks to the Payment API's admin routes using a server-side ADMIN_API_TOKEN.
+// ---------------------------------------------------------------------------
+const MIN_PANEL_PASSWORD_LENGTH = 12;
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const MAX_FAILED_LOGINS = 10;
+const failedLogins = new Map(); // ip -> { count, firstAt }
+
+function getPanelCredentials() {
+  const user = (process.env.ADMIN_PANEL_USER || process.env.INITIAL_ADMIN_EMAIL || '').trim();
+  const password = process.env.ADMIN_PANEL_PASSWORD || process.env.INITIAL_ADMIN_PASSWORD || '';
+  if (!user || password.length < MIN_PANEL_PASSWORD_LENGTH || isPlaceholderSecret(password)) return null;
+  return { user, password };
+}
+
+function clientIp(req) {
+  return req.socket?.remoteAddress || 'unknown';
+}
+
+function isLockedOut(ip) {
+  const entry = failedLogins.get(ip);
+  if (!entry) return false;
+  if (Date.now() - entry.firstAt > LOGIN_WINDOW_MS) {
+    failedLogins.delete(ip);
+    return false;
+  }
+  return entry.count >= MAX_FAILED_LOGINS;
+}
+
+function recordFailure(ip) {
+  const entry = failedLogins.get(ip);
+  if (!entry || Date.now() - entry.firstAt > LOGIN_WINDOW_MS) {
+    failedLogins.set(ip, { count: 1, firstAt: Date.now() });
+  } else {
+    entry.count += 1;
+  }
+}
+
+/**
+ * Returns true when the request is authenticated. Otherwise writes the response and returns false.
+ */
+export function checkPanelAuth(req, res) {
+  const creds = getPanelCredentials();
+  if (!creds) {
+    res.writeHead(503, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Merchant admin is disabled: set ADMIN_PANEL_USER and ADMIN_PANEL_PASSWORD (12+ characters, not the example value) in .env.');
+    return false;
+  }
+
+  const ip = clientIp(req);
+  if (isLockedOut(ip)) {
+    res.writeHead(429, { 'Content-Type': 'text/plain; charset=utf-8', 'Retry-After': '900' });
+    res.end('Too many failed login attempts. Try again later.');
+    return false;
+  }
+
+  const header = req.headers.authorization || '';
+  if (header.startsWith('Basic ')) {
+    let decoded = '';
+    try {
+      decoded = Buffer.from(header.slice(6).trim(), 'base64').toString('utf8');
+    } catch {}
+    const sep = decoded.indexOf(':');
+    if (sep > 0) {
+      const user = decoded.slice(0, sep);
+      const password = decoded.slice(sep + 1);
+      const userOk = safeEqual(user, creds.user);
+      const passOk = safeEqual(password, creds.password);
+      if (userOk && passOk) {
+        failedLogins.delete(ip);
+        return true;
+      }
+    }
+    recordFailure(ip);
+  }
+
+  res.writeHead(401, {
+    'Content-Type': 'text/plain; charset=utf-8',
+    'WWW-Authenticate': 'Basic realm="YOUPI Merchant Admin", charset="UTF-8"'
+  });
+  res.end('Authentication required.');
+  return false;
+}
+
+function isSameOrigin(req) {
+  const origin = req.headers.origin || '';
+  const referer = req.headers.referer || '';
+  const source = origin || referer;
+  if (!source) {
+    // Non-browser clients (curl, scripts) send neither header; they still need valid credentials.
+    return true;
+  }
+  let sourceHost;
+  try {
+    sourceHost = new URL(source).host.toLowerCase();
+  } catch {
+    return false;
+  }
+  const allowed = new Set(
+    [req.headers.host, req.headers['x-forwarded-host']]
+      .filter(Boolean)
+      .map(h => String(h).split(',')[0].trim().toLowerCase())
+  );
+  return allowed.has(sourceHost);
+}
+
+function stripAuthHeaders(headers) {
+  const copy = { ...headers };
+  delete copy.authorization;
+  delete copy['x-admin-token'];
+  delete copy['x-observer-token'];
+  delete copy.cookie;
+  return copy;
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -43,7 +160,7 @@ export class AdminServer {
     // This completely eliminates CORS errors, tunnel downtime 530s, and cross-origin failures.
     const clientApiBase = '';
     html = html.replaceAll('{{API_BASE_URL}}', clientApiBase);
-    html = html.replaceAll('{{ANDROID_ENROLLMENT_SECRET}}', process.env.ANDROID_ENROLLMENT_SECRET || 'android_pairing_enrollment_secret_key_32_chars');
+    html = html.replaceAll('{{ANDROID_ENROLLMENT_SECRET}}', getStrongSecret('ANDROID_ENROLLMENT_SECRET') || '');
     return html;
   }
 
@@ -66,6 +183,22 @@ export class AdminServer {
       if (pathname === '/health') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ status: 'UP', service: 'merchant-admin' }));
+        return;
+      }
+
+      // Public APK download (the companion app is not secret; phones fetch it during setup)
+      const isPublicApk = pathname === '/youpi-sms-gateway.apk';
+
+      // SECURITY: everything else on the admin panel requires login.
+      if (!isPublicApk && !checkPanelAuth(req, res)) {
+        return;
+      }
+
+      // SECURITY (CSRF): browsers attach Basic credentials to cross-site form posts,
+      // so state-changing requests must come from this same origin.
+      if (!['GET', 'HEAD'].includes(req.method) && !isSameOrigin(req)) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Cross-origin request blocked.' }));
         return;
       }
 
@@ -92,7 +225,7 @@ export class AdminServer {
           path: req.url,
           method: req.method,
           headers: {
-            ...req.headers,
+            ...stripAuthHeaders(req.headers),
             host: `localhost:${ccPort}`
           }
         }, (proxyRes) => {
@@ -123,7 +256,9 @@ export class AdminServer {
           path: req.url,
           method: req.method,
           headers: {
-            ...req.headers,
+            ...stripAuthHeaders(req.headers),
+            // Server-side admin credential; never exposed to the browser.
+            ...(getStrongSecret('ADMIN_API_TOKEN') ? { 'x-admin-token': getStrongSecret('ADMIN_API_TOKEN') } : {}),
             'x-merchant-id': req.headers['x-merchant-id'] || defaultMerchantId,
             host: `localhost:${targetPort}`,
             'x-forwarded-host': req.headers.host || '',

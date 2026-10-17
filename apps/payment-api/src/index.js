@@ -40,6 +40,7 @@ import {
   PaymentVerificationPipeline
 } from '@youpi/core';
 import { HttpServer } from './server.js';
+import { accessGuard } from './security/access-guard.js';
 import { registerPaymentRoutes } from './routes/payments.routes.js';
 import { registerCheckoutRoutes } from './routes/checkout.routes.js';
 import { registerPollerRoutes } from './routes/pollers.routes.js';
@@ -112,6 +113,8 @@ export function createPaymentApp(customDb = null, options = {}) {
   });
 
   const server = new HttpServer();
+  // SECURITY: admin, observer-ingestion and payment-simulation routes require tokens.
+  server.use(accessGuard);
   let checkoutBaseUrl = process.env.BASE_CHECKOUT_URL || 'http://localhost:7000';
   try {
     const rootEnv = path.resolve(__dirname, '../../../.env');

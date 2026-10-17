@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { runMigrations } from '../packages/db/src/migrate.js';
 import { startControlCenter } from '../apps/control-center/src/index.js';
+import { buildCloudflaredInvocation } from '../packages/common/src/security.js';
 
 if (!process.env.YOUPI_MODE) process.env.YOUPI_MODE = 'localhost';
 if (!process.env.NODE_ENV) process.env.NODE_ENV = 'development';
@@ -21,12 +22,18 @@ const tunnelCmd = process.env.CLOUDFLARE_TUNNEL_COMMAND || branding.cloudflareTu
 
 if (tunnelCmd && tunnelCmd.trim()) {
   console.log(`\n[☁️ Cloudflare Tunnel] Executing tunnel command before starting services:`);
-  console.log(`   > ${tunnelCmd.trim()}`);
-  const isWindows = process.platform === 'win32';
-  const shell = isWindows ? (process.env.ComSpec || 'cmd.exe') : '/bin/sh';
-  const shellArgs = isWindows ? ['/c', tunnelCmd.trim()] : ['-c', tunnelCmd.trim()];
-  tunnelProcess = spawn(shell, shellArgs, {
+  // SECURITY: the stored command is never run through a shell. Only a validated
+  // cloudflared token is accepted and cloudflared is launched with fixed arguments.
+  let invocation;
+  try {
+    invocation = buildCloudflaredInvocation(tunnelCmd);
+  } catch (err) {
+    console.error(`[☁️ Cloudflare Tunnel] Refusing to run tunnel command: ${err.message}`);
+    process.exit(1);
+  }
+  tunnelProcess = spawn(invocation.executable, invocation.args, {
     stdio: 'inherit',
+    shell: false,
     env: { ...process.env }
   });
   console.log(`[✓] Cloudflare Tunnel process launched (PID: ${tunnelProcess.pid}).\n`);

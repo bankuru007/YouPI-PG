@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { HttpServer } from '../server.js';
-import { PaymentStatus, PaymentMethod, SellingMode, AuditActorType, isValidVpa, toRupeesString, deriveCloudflareRoutes, resolveRuntimeUrls } from '@youpi/common';
+import { PaymentStatus, PaymentMethod, SellingMode, AuditActorType, isValidVpa, toRupeesString, deriveCloudflareRoutes, resolveRuntimeUrls, parseCloudflareTunnelToken, resolveGmailRedirectUri } from '@youpi/common';
 import { PaymentVerificationPipeline } from '@youpi/core';
 import { globalTunnelManager } from '../services/tunnel-manager.js';
 import { formatQrDataUrl } from '../services/whatsapp-berry.service.js';
@@ -274,6 +274,12 @@ export function registerAdminRoutes(server, ctx) {
     const session = ctx.sessionRepo.findById(paymentId);
     if (!session) {
       HttpServer.json(res, 404, { error: `Payment session not found: ${paymentId}` });
+      return;
+    }
+
+    // Never flip a finished session (e.g. FAILED/EXPIRED/CANCELLED) to SUCCESS.
+    if ([PaymentStatus.SUCCESS, PaymentStatus.FAILED, PaymentStatus.EXPIRED, PaymentStatus.CANCELLED].includes(session.status)) {
+      HttpServer.json(res, 409, { error: `Payment session is already ${session.status} and cannot be confirmed.` });
       return;
     }
 
@@ -999,7 +1005,16 @@ export function registerAdminRoutes(server, ctx) {
         mergedBranding.customDomain = (body.customDomain || inputBranding.customDomain || '').trim();
       }
       if (body.cloudflareTunnelCommand !== undefined || inputBranding.cloudflareTunnelCommand !== undefined) {
-        mergedBranding.cloudflareTunnelCommand = (body.cloudflareTunnelCommand !== undefined ? body.cloudflareTunnelCommand : inputBranding.cloudflareTunnelCommand)?.trim() || '';
+        const tunnelCmd = (body.cloudflareTunnelCommand !== undefined ? body.cloudflareTunnelCommand : inputBranding.cloudflareTunnelCommand)?.trim() || '';
+        if (tunnelCmd) {
+          try {
+            parseCloudflareTunnelToken(tunnelCmd);
+          } catch (err) {
+            HttpServer.json(res, 400, { error: err.message });
+            return;
+          }
+        }
+        mergedBranding.cloudflareTunnelCommand = tunnelCmd;
       }
 
       updates.branding = mergedBranding;
@@ -1389,6 +1404,13 @@ export function registerAdminRoutes(server, ctx) {
     }
 
     try {
+      parseCloudflareTunnelToken(command);
+    } catch (err) {
+      HttpServer.json(res, 400, { success: false, error: err.message });
+      return;
+    }
+
+    try {
       // Save command in merchant branding if provided
       const merchant = resolveMerchant(req);
       if (merchant && body.command) {
@@ -1418,7 +1440,7 @@ export function registerAdminRoutes(server, ctx) {
     const branding = merchant?.branding || {};
     const gmailConfig = branding.gmailConfig || {};
 
-    const redirectUri = 'https://pay-gmail.gauravtesting.online/oauth/callback';
+    const redirectUri = resolveGmailRedirectUri();
     const hasToken = Boolean(gmailConfig.refreshToken && gmailConfig.refreshToken.trim());
 
     HttpServer.json(res, 200, {
@@ -1461,7 +1483,7 @@ export function registerAdminRoutes(server, ctx) {
       });
       return;
     }
-    const redirectUri = 'https://pay-gmail.gauravtesting.online/oauth/callback';
+    const redirectUri = resolveGmailRedirectUri();
     const scopes = encodeURIComponent('https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/userinfo.email');
     const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=${scopes}&access_type=offline&prompt=consent&include_granted_scopes=true`;
 

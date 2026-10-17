@@ -8,6 +8,16 @@ export class HttpServer {
   constructor() {
     this.routes = [];
     this.sseClients = new Map(); // sessionId -> Set of res objects
+    this.guards = [];
+  }
+
+  /**
+   * Registers a guard that runs before routing. A guard returns true when it has
+   * already rejected the request (and written the response).
+   * @param {(req: any, res: any, pathname: string, method: string) => boolean} guard
+   */
+  use(guard) {
+    this.guards.push(guard);
   }
 
   /**
@@ -116,7 +126,7 @@ export class HttpServer {
       'Content-Type': 'application/json',
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization, Idempotency-Key, X-Device-Id, X-Timestamp, X-Signature'
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization, Idempotency-Key, X-Device-Id, X-Timestamp, X-Signature, X-Admin-Token, X-Observer-Token'
     });
     res.end(jsonStr);
   }
@@ -158,7 +168,7 @@ export class HttpServer {
         res.writeHead(204, {
           'Access-Control-Allow-Origin': '*',
           'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-          'Access-Control-Allow-Headers': 'Content-Type, Authorization, Idempotency-Key, X-Device-Id, X-Timestamp, X-Signature'
+          'Access-Control-Allow-Headers': 'Content-Type, Authorization, Idempotency-Key, X-Device-Id, X-Timestamp, X-Signature, X-Admin-Token, X-Observer-Token'
         });
         res.end();
         return;
@@ -167,6 +177,16 @@ export class HttpServer {
       const parsedUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
       const pathname = parsedUrl.pathname;
       const method = req.method.toUpperCase();
+
+      for (const guard of this.guards) {
+        try {
+          if (guard(req, res, pathname, method)) return;
+        } catch (err) {
+          console.error(`Guard Error [${method} ${pathname}]:`, err);
+          HttpServer.json(res, 500, { error: 'Internal Server Error' });
+          return;
+        }
+      }
 
       for (const route of this.routes) {
         if (route.method === method) {
